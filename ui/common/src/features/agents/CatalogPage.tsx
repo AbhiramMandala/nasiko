@@ -5,15 +5,16 @@
  */
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { RotateCw, X } from 'lucide-react'
+import { Bot, RotateCw, SearchX, X } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
-import { Skeleton } from '@/components/ui/skeleton'
 import { Toggle } from '@/components/ui/toggle'
 import { PageHeader } from '@/components/shared/page-header'
+import { PageLoader } from '@/components/shared/page-loader'
 import { SearchInput } from '@/components/shared/search-input'
+import { EmptyState } from '@/components/shared/state-card'
 import { DeployAgentButton } from '@/features/deploy/components/DeployAgentButton'
 import { copy as deployCopy } from '@/features/deploy/copy'
 import { ErrorState, StateCard } from '@/features/observability/StateCard'
@@ -21,7 +22,7 @@ import { useFleetHealth } from '@/features/overview/api'
 import { copy as overviewCopy } from '@/features/overview/copy'
 import { meQuery } from '@/lib/api/auth'
 import { useCatalogAgents, useCatalogTabs, useUsers } from './api'
-import { AgentMark, FirstRunSteps, StatusBadge } from './components/bits'
+import { AgentMark, AgentsNav, FirstRunSteps, StatusBadge } from './components/bits'
 import { copy } from './copy'
 import type { CatalogSearch } from './search'
 import { displayStatus, isHarness } from './status'
@@ -99,31 +100,23 @@ export function CatalogPage({
   )
 
   const header = (
-    <PageHeader
-      title={copy.catalogTitle}
-      description={
-        q.data ? (
-          <>
-            {copy.agentsCount(all.length - harnessCount)}
-            {(q.hasNextPage || q.isFetchingNextPage) && !q.isFetchNextPageError
-              ? ` · ${copy.loadingMore}`
-              : ''}
-          </>
-        ) : null
-      }
-      actions={
-        <>
-          <Link
-            to="/agents/mine"
-            search={{}}
-            className="text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
-          >
-            {copy.mineTitle} →
-          </Link>
-          <DeployAgentButton />
-        </>
-      }
-    />
+    <>
+      <PageHeader
+        title={copy.catalogTitle}
+        description={
+          q.data ? (
+            <>
+              {copy.agentsCount(all.length - harnessCount)}
+              {(q.hasNextPage || q.isFetchingNextPage) && !q.isFetchNextPageError
+                ? ` · ${copy.loadingMore}`
+                : ''}
+            </>
+          ) : null
+        }
+        actions={<DeployAgentButton />}
+      />
+      <AgentsNav current="/agents" />
+    </>
   )
 
   // Wait for the ratings, not just the directory: until the dashboards land every agent rates Unknown (/ship review).
@@ -134,11 +127,7 @@ export function CatalogPage({
     return (
       <div className="space-y-4">
         {header}
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" aria-busy="true">
-          {Array.from({ length: 6 }, (_, i) => (
-            <Skeleton key={i} className="h-36" />
-          ))}
-        </div>
+        <PageLoader label={copy.loadingAgents} />
       </div>
     )
   }
@@ -231,12 +220,18 @@ export function CatalogPage({
         />
       ) : null}
       {all.length === 0 ? (
-        <StateCard title={copy.noAgentsCatalog} action={<DeployAgentButton />}>
-          <p className="mb-2 text-xs text-muted-foreground">{deployCopy.entry.orCli}</p>
-          <FirstRunSteps />
-        </StateCard>
+        <>
+          <EmptyState icon={Bot} title={copy.noAgentsCatalog} action={<DeployAgentButton />}>
+            {copy.noAgentsCatalogHint}
+          </EmptyState>
+          <div>
+            <p className="mb-2 text-xs text-muted-foreground">{deployCopy.entry.orCli}</p>
+            <FirstRunSteps />
+          </div>
+        </>
       ) : shown.length === 0 ? (
-        <StateCard
+        <EmptyState
+          icon={SearchX}
           title={copy.noResults}
           action={
             <Button
@@ -249,7 +244,9 @@ export function CatalogPage({
               {copy.clearSearch}
             </Button>
           }
-        />
+        >
+          {copy.noResultsHint}
+        </EmptyState>
       ) : (
         <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {shown.map((a) => (
@@ -312,7 +309,7 @@ const AgentCard = memo(function AgentCard({
     // One link, no nested interactive elements (plan §7.1).
     <Card
       asChild
-      className="h-full gap-2 p-4 transition-colors hover:border-primary/40 focus-visible:outline-2 focus-visible:outline-ring"
+      className="h-full gap-2 p-4 transition-[color,border-color,box-shadow] hover:border-primary/40 hover:shadow-lg focus-visible:outline-2 focus-visible:outline-ring"
     >
       <Link to="/agents/$agentId" params={{ agentId: agent.id }} search={{}}>
         <div className="flex items-start gap-3">

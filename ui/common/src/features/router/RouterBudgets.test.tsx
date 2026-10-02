@@ -34,7 +34,8 @@ const ownerTitle = copy.budgetEdit(null)
 const money = (v: number) => `$${v.toFixed(2)}`
 const esc = (t: string) => t.replace(/[.$]/g, (c) => `\\${c}`)
 
-describe('Budgets section', () => {
+// Budgets hidden (no server support for /api/budgets yet, R-L10): un-skip with RouterPage's commented budget code.
+describe.skip('Budgets section', () => {
   it('shows you first, then agents; used of limit, forecast, state and the action at 100%', async () => {
     renderApp('/router')
     await ready()
@@ -176,7 +177,7 @@ describe('Budgets section', () => {
   })
 })
 
-describe('budget sheet', () => {
+describe.skip('budget sheet', () => {
   it('Raise limit opens the sheet on the limit and saves a guarded full replace', async () => {
     const rec = recordRequestBodies()
     renderApp('/router')
@@ -319,7 +320,7 @@ describe('budget sheet', () => {
   })
 })
 
-describe('new budgets', () => {
+describe.skip('new budgets', () => {
   it('the empty state creates one with the defaults: you first, Alert only, 50/80/100', async () => {
     configureMocks({ routerVariants: ['router-budgets-empty'] })
     const rec = recordRequestBodies()
@@ -407,7 +408,7 @@ describe('new budgets', () => {
   })
 })
 
-describe('TokenOps link, deep link and a11y', () => {
+describe.skip('TokenOps link, deep link and a11y', () => {
   it('TokenOps links to the router page’s budgets', async () => {
     renderApp('/tokenops')
     expect(
@@ -450,7 +451,7 @@ describe('TokenOps link, deep link and a11y', () => {
 
 // Regression: ISSUE-201..202 (/qa 2026-09-28, .gstack/qa-reports/qa-report-localhost-2026-09-28-r2.md): spend
 // jumping after Switch to Alert only; the TokenOps deep link landing above the Budgets section.
-describe('switching and deep-link regressions', () => {
+describe.skip('switching and deep-link regressions', () => {
   it('switching a stopped budget to Alert only doesn’t count the calls it refused', async () => {
     renderApp('/router')
     await screen.findByRole('table', { name: copy.budgetsTitle })

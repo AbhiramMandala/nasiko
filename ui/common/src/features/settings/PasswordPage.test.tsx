@@ -6,8 +6,10 @@ import { configureMocks } from '@/mocks/handlers'
 import { now, seed, setupPinnedSeed } from '@/test/pinnedSeed'
 import { recordRequests, server } from '@/test/setup'
 import { renderApp } from '@/test/renderApp'
-import { copy as shell } from './copy'
-import { passwordCopy as copy } from './passwordCopy'
+import { copy as shell } from '@/app/shell/copy'
+import { copy as settings } from './copy'
+
+const copy = settings.password
 
 setupPinnedSeed()
 afterEach(() => configureMocks({ seed, now, loggedIn: true, variant: null, superuser: null }))
@@ -15,10 +17,10 @@ afterEach(() => configureMocks({ seed, now, loggedIn: true, variant: null, super
 const T = { timeout: 5000 }
 const STRONG = 'A-brand-new-password9'
 
+/** The page's form (the only one: the card holding the three fields and Change password). */
 async function open() {
-  await userEvent.click(await screen.findByRole('button', { name: /^Account: / }, T))
-  await userEvent.click(await screen.findByRole('menuitem', { name: shell.account.changePassword }))
-  return screen.findByRole('dialog', { name: copy.title }, T)
+  const current = await screen.findByLabelText(copy.current, {}, T)
+  return current.closest('form') as HTMLElement
 }
 async function fill(d: HTMLElement, current: string, next: string, confirm = next) {
   const set = async (label: string, v: string) => {
@@ -32,10 +34,10 @@ async function fill(d: HTMLElement, current: string, next: string, confirm = nex
   await userEvent.click(within(d).getByRole('button', { name: copy.submit }))
 }
 
-describe('Change password (account menu)', () => {
+describe('Change password (Settings → Account → Password)', () => {
   it("reports the policy's first broken rule on its field before sending", async () => {
     const rec = recordRequests()
-    renderApp('/')
+    renderApp('/settings/password')
     const d = await open()
     expect(within(d).getByText(copy.policy(12, 64))).toBeInTheDocument()
     await fill(d, 'whatever', 'short')
@@ -46,17 +48,30 @@ describe('Change password (account menu)', () => {
     expect(rec.urls.some((u) => u.pathname === '/api/auth/change-password')).toBe(false)
   })
 
+  it('each field has its own reveal toggle', async () => {
+    renderApp('/settings/password')
+    const d = await open()
+    const current = within(d).getByLabelText(copy.current)
+    const toggle = within(d).getByRole('button', { name: copy.show(copy.current) })
+    expect(current).toHaveAttribute('type', 'password')
+    expect(toggle).toHaveAttribute('aria-pressed', 'false')
+    await userEvent.click(toggle)
+    expect(current).toHaveAttribute('type', 'text')
+    expect(toggle).toHaveAttribute('aria-pressed', 'true')
+    expect(within(d).getByLabelText(copy.next)).toHaveAttribute('type', 'password')
+  })
+
   it('changes it, then a wrong current password lands on its field (403, never a sign-out)', async () => {
-    const { router } = renderApp('/')
+    const { router } = renderApp('/settings/password')
     await fill(await open(), 'whatever', STRONG)
     expect(await screen.findByText(copy.changed, {}, T)).toBeInTheDocument()
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    // The form remounts after a change: nothing typed before survives.
+    await waitFor(() => expect(screen.getByLabelText(copy.current)).toHaveValue(''))
     const d = await open()
-    // A fresh dialog each time: nothing typed before survives.
-    expect(within(d).getByLabelText(copy.current)).toHaveValue('')
+    expect(within(d).getByLabelText(copy.next)).toHaveValue('')
     await fill(d, 'not-it', 'Another-password9')
     expect(await within(d).findByText('Current password is incorrect')).toBeInTheDocument()
-    expect(router.state.location.pathname).toBe('/')
+    expect(router.state.location.pathname).toBe('/settings/password')
   })
 
   it('an SSO account gets the server reason as a toast (409 no_local_password)', async () => {
@@ -71,7 +86,7 @@ describe('Change password (account menu)', () => {
         ),
       ),
     )
-    renderApp('/')
+    renderApp('/settings/password')
     await fill(await open(), 'whatever', STRONG)
     expect(
       await screen.findByText('This account signs in through your identity provider', {}, T),
@@ -85,7 +100,7 @@ describe('Change password (account menu)', () => {
         return new HttpResponse(null, { status: 204 })
       }),
     )
-    const { router } = renderApp('/')
+    const { router } = renderApp('/settings/password')
     await fill(await open(), 'whatever', STRONG)
     await waitFor(() => expect(router.state.location.pathname).toBe('/login'), T)
     expect(router.state.location.search).toMatchObject({ password: 'changed' })

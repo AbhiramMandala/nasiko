@@ -1,6 +1,8 @@
 /**
  * shadcn `select` (new-york-v4), with local edits to re-apply after any `shadcn add select`:
  * - focus is the one app style: a 2 px `--ring` with a 2 px page-coloured offset (DESIGN.md "Focus"), not the 3 px glow.
+ * - `SelectContent` defaults to `position="popper"`, `align="start"`: the list drops below the trigger like every other
+ *   dropdown, instead of `item-aligned` (covering the trigger and jumping to the selected item).
  */
 import * as React from "react"
 import { cn } from "@/lib/utils"
@@ -54,8 +56,8 @@ function SelectTrigger({
 function SelectContent({
   className,
   children,
-  position = "item-aligned",
-  align = "center",
+  position = "popper",
+  align = "start",
   ...props
 }: React.ComponentProps<typeof SelectPrimitive.Content>) {
   return (

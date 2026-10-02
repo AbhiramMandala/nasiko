@@ -1,6 +1,6 @@
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useQueryClient } from '@tanstack/react-query'
-import { CircleAlert } from 'lucide-react'
+import { ArrowRight, CircleAlert, Eye, EyeOff } from 'lucide-react'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import { useForm } from 'react-hook-form'
@@ -9,9 +9,16 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Field, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupInput,
+} from '@/components/ui/input-group'
+import { Spinner } from '@/components/ui/spinner'
 import { copy } from '@/app/shell/copy'
-import { LoginShowcase } from '@/app/shell/LoginShowcase'
-import { NasikoMark } from '@/app/shell/NasikoMark'
+import { LoginGlow, LoginShowcase } from '@/app/shell/LoginShowcase'
+import { NasikoLockup } from '@/app/shell/NasikoMark'
 import { LOGIN_ACCENT, pinAccent } from '@/app/shell/theme'
 import {
   endServerSession,
@@ -69,6 +76,7 @@ function LoginPage() {
     pinAccent(LOGIN_ACCENT)
     return () => pinAccent(null)
   }, [])
+  const [showPassword, setShowPassword] = useState(false)
   // Keep Sign in disabled while Try again runs (the session lock already serialises the two calls).
   const [retrying, setRetrying] = useState(false)
   // handleSubmit clears root errors itself at the start of each submit.
@@ -125,78 +133,99 @@ function LoginPage() {
   }
 
   return (
-    // Our own take on Aceternity's "Login Form With Gradient", measured against its live preview: the preview's
-    // neutral-100 / neutral-900 page (Carbon's muted / card), max-w-7xl, two equal columns with a 160 px gap from lg,
-    // 16 px label-to-field and 32 px field spacing, a 40 px rounded-xl button; the decorative showcase from `md` up.
-    // The form is centred beside the panel and capped at max-w-md: without the block's social row and sign-up line
-    // it is shorter than the panel, so a top-aligned or full-column form read as off (user review).
-    <main className="flex min-h-svh items-center bg-muted dark:bg-card">
-      <div className="mx-auto grid w-full max-w-7xl items-center gap-10 px-4 py-10 md:grid-cols-2 md:px-8 md:py-20 lg:gap-40">
-        <div className="flex w-full max-w-md flex-col gap-3">
-          {/* Only while the barrier is set (or unknowable: storage blocked). A stale ?signout=failed after
-          a newer sign-in must not offer a logout that would end that new session (review, red team). */}
-          {signout === 'failed' && signedOutMark() !== false ? (
-            <SignOutFailed
-              disabled={busy}
-              onBusy={setRetrying}
-              onDone={() =>
-                void navigate({ to: '/login', search: { redirect, expired }, replace: true })
-              }
-            />
-          ) : null}
-          <NasikoMark className="size-6 text-logo" />
-          <h1 className="mt-1 text-3xl font-medium tracking-tight md:text-4xl">
-            {copy.login.title}
-          </h1>
-          <p className="mt-1 text-sm font-medium tracking-tight text-muted-foreground lg:text-base">
-            {password
-              ? copy.login.passwordChanged
-              : expired
-                ? copy.login.expired
-                : copy.login.tagline}
-          </p>
-          <form className="mt-3" onSubmit={(e) => void form.handleSubmit(submit)(e)}>
-            <FieldGroup className="gap-8">
-              <Field data-invalid={!!errors.username} className="gap-4">
-                <FieldLabel htmlFor="login-username" className="leading-none">
-                  {copy.login.username}
-                </FieldLabel>
-                <Input
-                  id="login-username"
-                  autoComplete="username"
-                  required
-                  aria-invalid={!!errors.username}
-                  {...form.register('username')}
-                />
-                <FieldError errors={[errors.username]} className="text-xs" />
-              </Field>
-              <Field data-invalid={!!errors.password} className="gap-4">
-                <FieldLabel htmlFor="login-password" className="leading-none">
-                  {copy.login.password}
-                </FieldLabel>
-                <Input
-                  id="login-password"
-                  type="password"
-                  autoComplete="current-password"
-                  required
-                  aria-invalid={!!errors.password}
-                  {...form.register('password')}
-                />
-                <FieldError errors={[errors.password]} className="text-xs" />
-              </Field>
-              <FieldError errors={[errors.root?.server]} className="text-xs" />
-              <Button
-                type="submit"
-                size="lg"
-                className="rounded-xl text-base"
-                disabled={busy || retrying}
-              >
-                {busy ? copy.login.submitting : copy.login.submit}
-              </Button>
-            </FieldGroup>
-          </form>
+    // The prototype's layout (docs/superpowers/specs/2026-10-01-login-onboarding-design.md §1), mirrored and full page:
+    // the decorative showcase over the left half from `md` up, the form column on the right. The page keeps Carbon's muted / card background; the form is centred in its column and capped at max-w-md.
+    // The prototype's page: two equal columns on its warm backdrop (`--showcase-bg`, per mode), 16 px apart and in.
+    <main className="relative isolate grid min-h-svh gap-4 overflow-hidden p-4 [background:var(--showcase-bg)] md:grid-cols-2">
+      {/* One glow behind the whole page, so the two halves read as one page. */}
+      <LoginGlow />
+      {/* aria-hidden and hidden below `md`, so leading the DOM changes neither tab order nor the phone layout. */}
+      <LoginShowcase />
+      <div className="relative flex flex-col px-4 py-7 md:px-8">
+        <div className="flex flex-1 items-center justify-center py-8">
+          <div className="flex w-full max-w-115 flex-col gap-3">
+            {/* Only while the barrier is set (or unknowable: storage blocked). A stale ?signout=failed after
+              a newer sign-in must not offer a logout that would end that new session (review, red team). */}
+            {signout === 'failed' && signedOutMark() !== false ? (
+              <SignOutFailed
+                disabled={busy}
+                onBusy={setRetrying}
+                onDone={() =>
+                  void navigate({ to: '/login', search: { redirect, expired }, replace: true })
+                }
+              />
+            ) : null}
+            <NasikoLockup className="h-6 w-auto self-start text-foreground" />
+            <h1 className="mt-4 text-[40px] leading-[1.1] font-semibold tracking-[-0.035em]">
+              {copy.login.title}
+            </h1>
+            <p className="mt-1 text-[15.5px] leading-[1.55] text-pretty text-muted-foreground">
+              {password
+                ? copy.login.passwordChanged
+                : expired
+                  ? copy.login.expired
+                  : copy.login.tagline}
+            </p>
+            <form className="mt-3" onSubmit={(e) => void form.handleSubmit(submit)(e)}>
+              <FieldGroup className="gap-5.5">
+                <Field data-invalid={!!errors.username} className="gap-2">
+                  <FieldLabel htmlFor="login-username" className="text-[13.5px]">
+                    {copy.login.username}
+                  </FieldLabel>
+                  <Input
+                    id="login-username"
+                    autoComplete="username"
+                    placeholder={copy.login.usernamePlaceholder}
+                    required
+                    className="h-12.5 rounded-[10px] bg-background px-3.5"
+                    aria-invalid={!!errors.username}
+                    {...form.register('username')}
+                  />
+                  <FieldError errors={[errors.username]} className="text-xs" />
+                </Field>
+                <Field data-invalid={!!errors.password} className="gap-2">
+                  <FieldLabel htmlFor="login-password" className="text-[13.5px]">
+                    {copy.login.password}
+                  </FieldLabel>
+                  <InputGroup className="h-12.5 rounded-[10px] bg-background">
+                    <InputGroupInput
+                      id="login-password"
+                      type={showPassword ? 'text' : 'password'}
+                      autoComplete="current-password"
+                      placeholder={copy.login.passwordPlaceholder}
+                      required
+                      aria-invalid={!!errors.password}
+                      {...form.register('password')}
+                    />
+                    <InputGroupAddon align="inline-end">
+                      <InputGroupButton
+                        size="icon-sm"
+                        aria-label={copy.login.showPassword}
+                        aria-pressed={showPassword}
+                        aria-controls="login-password"
+                        onClick={() => setShowPassword((v) => !v)}
+                      >
+                        {showPassword ? <EyeOff aria-hidden /> : <Eye aria-hidden />}
+                      </InputGroupButton>
+                    </InputGroupAddon>
+                  </InputGroup>
+                  <FieldError errors={[errors.password]} className="text-xs" />
+                </Field>
+                <FieldError errors={[errors.root?.server]} className="text-xs" />
+                <Button
+                  type="submit"
+                  size="lg"
+                  className="h-13 rounded-[10px] text-[15px]"
+                  disabled={busy || retrying}
+                >
+                  {busy ? <Spinner aria-hidden /> : null}
+                  {busy ? copy.login.submitting : copy.login.submit}
+                  {busy ? null : <ArrowRight aria-hidden />}
+                </Button>
+              </FieldGroup>
+            </form>
+          </div>
         </div>
-        <LoginShowcase />
       </div>
     </main>
   )

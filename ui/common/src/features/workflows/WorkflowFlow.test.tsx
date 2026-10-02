@@ -12,6 +12,19 @@ afterEach(() => configureMocks({ seed, now, loggedIn: true, variant: null }))
 
 const T = { timeout: 10_000 }
 const idOf = (name: string) => workflowsMockState().workflows.find((w) => w.name === name)!.id
+/** The run that Run landed on (`?run=`): its card, open, titled `title`. */
+async function openRunCard(router: ReturnType<typeof renderApp>['router'], title: RegExp) {
+  await waitFor(() => expect(router.state.location.search).toHaveProperty('run'), T)
+  const id = (router.state.location.search as { run: string }).run
+  const card = await waitFor(() => {
+    const el = document.querySelector<HTMLElement>(`[data-card="${id}"]`)
+    expect(el).toHaveAttribute('data-state', 'open')
+    return el!
+  }, T)
+  expect(within(card).getByRole('button', { name: title })).toBeInTheDocument()
+  return card
+}
+
 /** A clock the test moves (configureMocks({ now }) rebuilds the state, so set it once). */
 function clock() {
   let t = now()
@@ -48,11 +61,11 @@ describe('Create workflow (plans/feat-workflows.md §3, §4)', () => {
     })
     expect((create.body as { steps: object[] }).steps[0]).not.toHaveProperty('agent_id')
     await userEvent.click(within(dialog).getByRole('button', { name: copy.runWorkflow }))
-    await waitFor(() => expect(router.state.location.search).toHaveProperty('run'))
-    expect(await screen.findByRole('heading', { name: 'Weekly digest', level: 1 }, T)).toBeVisible()
+    // The Runs tab, with the new run open.
+    await waitFor(() => expect(router.state.location.pathname).toBe('/workflows/runs'))
+    const run = await openRunCard(router, /^Weekly digest #\d+$/)
     c.advance(60_000)
-    expect(await screen.findByRole('heading', { name: copy.output }, T)).toBeInTheDocument()
-    expect(screen.getAllByText('Complete').length).toBeGreaterThan(1)
+    await waitFor(() => expect(within(run).getAllByText('Complete').length).toBeGreaterThan(1), T)
   })
 
   it('drafts steps with the planner, and asks before replacing edited steps', async () => {
@@ -145,16 +158,14 @@ describe('Workflow page and runs (plans/feat-workflows.md §5, §6)', () => {
     const c = clock()
     const { router } = renderApp(`/workflows/${idOf('Onboarding checklist')}`)
     await userEvent.click(await screen.findByRole('button', { name: copy.saveAndRun }, T))
-    await waitFor(() => expect(router.state.location.search).toHaveProperty('run'))
-    const steps = await screen.findByRole('list', { name: copy.stepsLabel }, T)
-    expect(
-      within(steps).getByText(/Step 1 — Build the new hire's first-week checklist/),
-    ).toBeInTheDocument()
+    await waitFor(() => expect(router.state.location.pathname).toBe('/workflows/runs'))
+    const run = await openRunCard(router, /^Onboarding checklist #\d+$/)
     c.advance(60_000)
-    expect(await screen.findByRole('heading', { name: copy.output }, T)).toBeInTheDocument()
-    expect(screen.getByText(copy.planning)).toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: copy.backToWorkflow }))
-    await waitFor(() => expect(router.state.location.search).not.toHaveProperty('run'))
+    await waitFor(() => expect(within(run).getAllByText('Complete').length).toBeGreaterThan(1), T)
+    router.history.back()
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe(`/workflows/${idOf('Onboarding checklist')}`),
+    )
     expect(await screen.findByRole('button', { name: copy.deploy }, T)).toBeInTheDocument()
   })
 
@@ -192,6 +203,14 @@ describe('Workflow page and runs (plans/feat-workflows.md §5, §6)', () => {
       name: copy.rerun,
     })
     expect(rerun).toBeEnabled()
+  })
+
+  it('runs filtered to nothing say so, and Clear filters resets every filter', async () => {
+    const { router } = renderApp('/workflows/runs?q=zzz-no-such-run&status=failed')
+    expect(await screen.findByText(copy.noRunsMatch, {}, T)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: copy.clearFilters }))
+    await waitFor(() => expect(router.state.location.search).toEqual({}))
+    expect(await screen.findByRole('button', { name: /Legacy export #\d+/ }, T)).toBeVisible()
   })
 
   it('a missing workflow is one dead end', async () => {

@@ -4,8 +4,19 @@
  * more. Titles are owner text and render as text only.
  */
 import { Link } from '@tanstack/react-router'
-import { AlertCircle, Loader2, RotateCw, Search, SquarePen, X } from 'lucide-react'
+import {
+  AlertCircle,
+  Loader2,
+  MessageSquare,
+  RotateCw,
+  Search,
+  SearchX,
+  SquarePen,
+  SquareTerminal,
+  X,
+} from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type Ref } from 'react'
+import { EmptyState } from '@/components/shared/state-card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -28,6 +39,7 @@ import { chatIdentity } from '../identity'
 import { groupByDate, rowStates, rowTooltip, type DateGroup } from '../railGroups'
 import { readRailView, rememberRailView, type RailView } from '../rememberTarget'
 import { IdentityIcon } from './ChatIdentity'
+import { RAIL_EMPTY, RAIL_ROW, RAIL_ROW_ACTIVE } from './turnStyles'
 
 const GROUP_LABEL: Record<DateGroup, string> = {
   today: copy.groupToday,
@@ -230,22 +242,18 @@ export function ChatRail({
               </Button>
             }
           />
-        ) : !rows.length ? (
-          <div className="space-y-2 px-2 py-4 text-sm">
-            <p className="font-medium">{copy.noChats}</p>
-            <p className="text-muted-foreground">{copy.noChatsHint}</p>
-            <Button asChild size="sm" variant="outline" className="pointer-coarse:min-h-11">
-              <Link to="/chat" search={carry} onClick={onNavigate}>
-                {copy.newChat}
-              </Link>
-            </Button>
-          </div>
+        ) : !rows.length || (view === 'chats' && !live.length && !list.hasNextPage) ? (
+          <EmptyState icon={MessageSquare} title={copy.noChats} className={RAIL_EMPTY}>
+            {copy.noChatsHint}
+          </EmptyState>
         ) : view === 'recorded' && !recorded.length ? (
-          <p className="px-2 py-4 text-sm text-muted-foreground">{copy.noRecorded}</p>
+          <EmptyState icon={SquareTerminal} title={copy.noRecorded} className={RAIL_EMPTY}>
+            {copy.noRecordedHint}
+          </EmptyState>
         ) : view === 'chats' && !live.length ? (
-          <p className="px-2 py-4 text-sm text-muted-foreground">
-            {list.hasNextPage ? copy.noLiveLoaded : copy.noChats}
-          </p>
+          <EmptyState icon={MessageSquare} title={copy.noLiveLoaded} className={RAIL_EMPTY}>
+            {copy.loadMoreToSearch}
+          </EmptyState>
         ) : (
           <>
             {groups.map(({ group, rows: inGroup }) => (
@@ -256,7 +264,7 @@ export function ChatRail({
                 >
                   {GROUP_LABEL[group]}
                 </h3>
-                <ul className="space-y-1">
+                <ul className="space-y-0.5">
                   {inGroup.map(({ row: r, identity }) => {
                     const active = r.session_id === activeId
                     const muted = identity.kind === 'removed'
@@ -274,9 +282,9 @@ export function ChatRail({
                           aria-current={active ? 'page' : undefined}
                           data-testid="rail-row"
                           className={cn(
-                            'flex min-h-11 items-center gap-2 rounded-md border border-border bg-card px-2 py-1.5 outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
-                            active && 'bg-muted',
-                            muted && 'text-muted-foreground',
+                            RAIL_ROW,
+                            active && RAIL_ROW_ACTIVE,
+                            muted && !active && 'text-muted-foreground',
                           )}
                         >
                           <IdentityIcon kind={identity.kind} name={identity.name} size={20} />
@@ -285,7 +293,12 @@ export function ChatRail({
                               {r.title || '—'}
                             </span>
                             {/* The name shrinks first; the time always stays whole. */}
-                            <span className="flex min-w-0 text-xs text-muted-foreground">
+                            <span
+                              className={cn(
+                                'flex min-w-0 text-xs',
+                                active ? 'text-accent-foreground' : 'text-muted-foreground',
+                              )}
+                            >
                               <span className="min-w-0 truncate">{identity.railLabel}</span>
                               <span className="shrink-0 whitespace-pre">
                                 {' '}
@@ -332,10 +345,13 @@ export function ChatRail({
               </section>
             ))}
             {filter && !shown.length ? (
-              <div className="space-y-1 px-2 py-3 text-sm text-muted-foreground">
-                <p>{copy.noLoadedMatch(filter.trim())}</p>
-                {list.hasNextPage ? <p>{copy.loadMoreToSearch}</p> : null}
-              </div>
+              <EmptyState
+                icon={SearchX}
+                title={copy.noLoadedMatch(filter.trim())}
+                className={RAIL_EMPTY}
+              >
+                {list.hasNextPage ? copy.loadMoreToSearch : copy.noMatchHint}
+              </EmptyState>
             ) : null}
           </>
         )}

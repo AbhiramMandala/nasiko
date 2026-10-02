@@ -79,6 +79,22 @@ describe('Workflow lists (plans/feat-workflows.md §2)', () => {
     await waitFor(() => expect(screen.queryByRole('link', { name: 'Invoice triage' })).toBeNull())
   })
 
+  it('Run now lands on the Runs tab with the new run open, and one Back returns', async () => {
+    const { router } = renderApp('/workflows')
+    const invoice = await card('Invoice triage')
+    await userEvent.click(within(invoice).getByRole('button', { name: /Workflow actions/ }))
+    await userEvent.click(await screen.findByRole('menuitem', { name: copy.runNow }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/workflows/runs'))
+    await waitFor(() => expect(router.state.location.search).toHaveProperty('run'), T)
+    const run = (router.state.location.search as { run: string }).run
+    await waitFor(() => {
+      const el = document.querySelector(`[data-card="${run}"]`)
+      expect(el).toHaveAttribute('data-state', 'open')
+    }, T)
+    router.history.back()
+    await waitFor(() => expect(router.state.location.pathname).toBe('/workflows'))
+  })
+
   it('shows the empty card with both ways forward', async () => {
     configureMocks({ variant: 'workflows-empty' })
     renderApp('/workflows')

@@ -4,15 +4,15 @@
  * A custom server's name links to its page; its Connect control sits beside the link, never inside it.
  */
 import { Link } from '@tanstack/react-router'
-import { CheckCircle2, Network, Plus, RotateCw, Upload } from 'lucide-react'
+import { CheckCircle2, Plug, Plus, RotateCw, SearchX, Upload } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
-import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Toggle } from '@/components/ui/toggle'
 import { PageHeader } from '@/components/shared/page-header'
+import { PageLoader } from '@/components/shared/page-loader'
 import { SearchInput } from '@/components/shared/search-input'
 import { EmptyState, StateCard } from '@/components/shared/state-card'
 import { AgentMark } from '@/features/agents/components/bits'
@@ -78,10 +78,15 @@ export function CatalogPage({
 
   const actions = (
     <>
-      <Button variant="outline" onClick={() => setDialog('upload')}>
+      <Button
+        variant="outline"
+        size="sm"
+        className="pointer-coarse:min-h-11"
+        onClick={() => setDialog('upload')}
+      >
         <Upload aria-hidden /> {copy.upload}
       </Button>
-      <Button onClick={() => setDialog('register')}>
+      <Button size="sm" className="pointer-coarse:min-h-11" onClick={() => setDialog('register')}>
         <Plus aria-hidden /> {copy.register}
       </Button>
     </>
@@ -104,11 +109,7 @@ export function CatalogPage({
     return (
       <div className="space-y-4">
         {header}
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" aria-busy="true">
-          {Array.from({ length: 6 }, (_, i) => (
-            <Skeleton key={i} className="h-36" />
-          ))}
-        </div>
+        <PageLoader label={copy.loadingCatalog} />
         {dialogs}
       </div>
     )
@@ -176,9 +177,7 @@ export function CatalogPage({
               {TABS.map((t) => (
                 <TabsTrigger key={t} value={t}>
                   {copy.tabs[t]}
-                  <span className="ml-1.5 text-xs text-muted-foreground tabular-nums">
-                    {counts[t]}
-                  </span>
+                  <span className="text-xs text-muted-foreground tabular-nums">{counts[t]}</span>
                 </TabsTrigger>
               ))}
             </TabsList>
@@ -193,15 +192,19 @@ export function CatalogPage({
             </ul>
           ) : q.trim() ? (
             <EmptyState
-              title={copy.noResults}
+              icon={SearchX}
+              title={copy.noResults(q.trim())}
               action={
                 <Button size="sm" variant="outline" onClick={() => setSearch({ q: undefined })}>
                   {copy.clearSearch}
                 </Button>
               }
-            />
+            >
+              {copy.noResultsHint}
+            </EmptyState>
           ) : tab === 'connected' ? (
             <EmptyState
+              icon={Plug}
               title={copy.nothingConnected}
               action={
                 <Button size="sm" onClick={() => setSearch({ tab: 'available' })}>
@@ -212,13 +215,7 @@ export function CatalogPage({
               {copy.nothingConnectedDesc}
             </EmptyState>
           ) : (
-            <EmptyState
-              title={
-                <span className="inline-flex items-center gap-1.5">
-                  <CheckCircle2 className="size-4 text-success" aria-hidden /> {copy.allConnected}
-                </span>
-              }
-            >
+            <EmptyState icon={CheckCircle2} title={copy.allConnected}>
               {copy.allConnectedDesc}
             </EmptyState>
           )}
@@ -233,16 +230,7 @@ export function CatalogPage({
 function ScopeEmpty({ view, actions }: { view: CatalogSearch['view']; actions: React.ReactNode }) {
   const e = copy.empty[view ?? 'all']
   return (
-    <EmptyState
-      title={
-        <span className="inline-flex items-center gap-1.5">
-          <Network className="size-4 text-muted-foreground" aria-hidden /> {e.title}
-        </span>
-      }
-      action={
-        actions ? <div className="flex flex-wrap justify-center gap-2">{actions}</div> : undefined
-      }
-    >
+    <EmptyState icon={Plug} title={e.title} action={actions ?? undefined}>
       {e.desc}
     </EmptyState>
   )

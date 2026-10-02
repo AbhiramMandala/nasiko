@@ -37,6 +37,8 @@ export const runsSearchSchema = z.object({
   q,
   status: z.enum(RUN_STATUS_FILTERS).optional().catch(undefined),
   age: z.enum(RUN_AGE_FILTERS).optional().catch(undefined),
+  /** The run to open and scroll to (an execution id): where Run lands (`run.ts`). */
+  run: z.string().uuid().optional().catch(undefined),
 })
 export type RunsSearch = z.infer<typeof runsSearchSchema>
 

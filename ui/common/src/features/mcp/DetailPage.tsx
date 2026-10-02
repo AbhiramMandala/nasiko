@@ -17,10 +17,10 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { CopyButton, CopyMenuItem } from '@/components/shared/copy-button'
 import { PageHeader } from '@/components/shared/page-header'
+import { PageLoader } from '@/components/shared/page-loader'
 import { StateCard } from '@/components/shared/state-card'
 import { AgentMark } from '@/features/agents/components/bits'
 import { isUuid } from '@/features/agents/normalize'
@@ -89,13 +89,7 @@ function Detail({ id, search }: { id: string; search: DetailSearch }) {
     if (badTab) void navigate({ to: '.', search: (s) => ({ ...s, tab: undefined }), replace: true })
   }, [badTab, navigate])
 
-  if (q.isPending)
-    return (
-      <div className="space-y-3" aria-busy="true">
-        <Skeleton className="h-16" />
-        <Skeleton className="h-64" />
-      </div>
-    )
+  if (q.isPending) return <PageLoader label={copy.loadingServer} />
   if (q.isError)
     return q.error instanceof ApiError && (q.error.status === 404 || q.error.status === 403) ? (
       <NotFound />

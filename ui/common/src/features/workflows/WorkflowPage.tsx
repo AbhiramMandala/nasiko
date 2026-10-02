@@ -3,19 +3,19 @@
  * `?run=`, one of its runs. Opening a run pushes history; the run's Back pops what this page pushed and replaces
  * otherwise (a deep link, the runs page). A 404 or 403 is one dead end (the server never says which to a stranger).
  */
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useRouter } from '@tanstack/react-router'
-import { ChevronLeft, Loader2, Pencil, Play, RotateCw } from 'lucide-react'
+import { ChevronLeft, Pencil, Play, RotateCw, Workflow as WorkflowIcon } from 'lucide-react'
 import { useState } from 'react'
-import { toast } from 'sonner'
+import { PageLoader } from '@/components/shared/page-loader'
 import { EmptyState, StateCard } from '@/components/shared/state-card'
 import { Button } from '@/components/ui/button'
-import { Skeleton } from '@/components/ui/skeleton'
 import { isUuid } from '@/features/agents/normalize'
 import { ApiError } from '@/lib/api/client'
-import { dropFromLists, runWorkflow, workflowQuery } from './api'
+import { dropFromLists, workflowQuery } from './api'
 import { copy, reason } from './copy'
 import { descriptionOf, isDeployed } from './logic'
+import { useStartRun } from './run'
 import type { Workflow } from './types'
 import { DeleteWorkflowDialog } from './components/DeleteWorkflowDialog'
 import { EditFace } from './components/EditFace'
@@ -33,6 +33,7 @@ function DeadEnd({ title, text }: { title: string; text: string }) {
   return (
     <div className={COLUMN}>
       <EmptyState
+        icon={WorkflowIcon}
         title={<h1>{title}</h1>}
         action={
           <Button asChild variant="outline">
@@ -67,14 +68,7 @@ function Detail({ id, run }: { id: string; run?: string }) {
         />
       </div>
     )
-  return (
-    <div className={COLUMN} aria-busy="true">
-      <Skeleton className="h-8 w-1/2" />
-      <Skeleton className="h-4 w-4/5" />
-      <Skeleton className="h-24 w-full" />
-      <Skeleton className="h-24 w-full" />
-    </div>
-  )
+  return <PageLoader label={copy.loadingWorkflow} />
 }
 
 function Loaded({ wf, run }: { wf: Workflow; run?: string }) {
@@ -82,16 +76,9 @@ function Loaded({ wf, run }: { wf: Workflow; run?: string }) {
   const router = useRouter()
   const [editing, setEditing] = useState(false)
   const live = isDeployed(wf)
-  // The run is its own history entry: Back and Forward move between it and the review.
-  const openRun = (execId: string) => {
-    setEditing(false)
-    void navigate({
-      to: '/workflows/$workflowId',
-      params: { workflowId: wf.id },
-      search: { run: execId },
-      state: (s) => ({ ...s, workflowRunPushed: true }),
-    })
-  }
+  // Save & run lands on the Runs tab with the run open, as Run does (`run.ts`).
+  const openRun = (execId: string) =>
+    void navigate({ to: '/workflows/runs', search: { run: execId } })
   if (run)
     return (
       <RunView
@@ -120,7 +107,7 @@ function Loaded({ wf, run }: { wf: Workflow; run?: string }) {
         </Button>
       </div>
       {live && !editing ? (
-        <ReadOnlyFace wf={wf} onEdit={() => setEditing(true)} onRun={openRun} />
+        <ReadOnlyFace wf={wf} onEdit={() => setEditing(true)} />
       ) : (
         <EditFace wf={wf} onCancel={() => setEditing(false)} onRun={openRun}>
           <OutputGuidelines wf={wf} />
@@ -145,21 +132,9 @@ function OutputGuidelines({ wf }: { wf: Workflow }) {
 }
 
 /** A live workflow as it stands: Edit to change it, Run to run it. */
-function ReadOnlyFace({
-  wf,
-  onEdit,
-  onRun,
-}: {
-  wf: Workflow
-  onEdit: () => void
-  onRun: (execId: string) => void
-}) {
+function ReadOnlyFace({ wf, onEdit }: { wf: Workflow; onEdit: () => void }) {
   const steps = wf.maf_json?.steps ?? []
-  const run = useMutation({
-    mutationFn: () => runWorkflow(wf.id),
-    onSuccess: (r) => onRun(r.execution_id),
-    onError: (err) => toast.error(copy.runFailed(reason(err))),
-  })
+  const startRun = useStartRun()
   return (
     <>
       <div className="flex flex-col gap-2">
@@ -195,9 +170,8 @@ function ReadOnlyFace({
         <Button variant="ghost" onClick={onEdit}>
           <Pencil aria-hidden /> {copy.edit}
         </Button>
-        <Button disabled={run.isPending || !steps.length} onClick={() => run.mutate()}>
-          {run.isPending ? <Loader2 className="animate-spin" aria-hidden /> : <Play aria-hidden />}{' '}
-          {copy.run}
+        <Button disabled={!steps.length} onClick={() => startRun(wf.id)}>
+          <Play aria-hidden /> {copy.run}
         </Button>
       </div>
     </>

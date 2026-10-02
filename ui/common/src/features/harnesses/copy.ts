@@ -5,6 +5,7 @@
 export const copy = {
   title: 'Harnesses',
   subtitle: 'Coding harnesses connected to OpenRuntime',
+  loading: 'Loading harness usage',
   registered: 'Registered',
   registeredTip:
     'A harness is registered when its agent row exists: `nasiko agents install` creates it, and so does `nasiko connect`, `use` or `auth login` for every harness found on the machine. Uninstalling keeps the row, so registered can overstate real use.',
@@ -47,6 +48,7 @@ export const copy = {
   noUnits: 'No units to show.',
   noDevelopersInScope: 'No developers in this scope.',
   notVisible: 'Not found or not visible.',
+  notVisibleHint: "This usage doesn't exist, or it isn't shared with you.",
   noHarnesses: 'No harnesses connected to OpenRuntime yet.',
   deltaUnavailable: 'Δ unavailable',
 

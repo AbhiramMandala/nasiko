@@ -14,9 +14,7 @@ describe('motion presets (plans/feat-app-shell.md §5.4)', () => {
       standard: 200,
       panelIn: 220,
       panelOut: 160,
-      typeChar: 60,
-      eraseChar: 30,
-      typeHold: 1500,
+      wordHold: 2800,
     })
     expect(transitions.collapse).toEqual({ duration: 0.18, ease: 'easeOut' })
     expect(transitions.panelIn.duration).toBe(0.22)

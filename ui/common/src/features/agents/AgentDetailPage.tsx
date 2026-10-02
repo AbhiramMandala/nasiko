@@ -18,9 +18,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { PageHeader } from '@/components/shared/page-header'
+import { PageLoader } from '@/components/shared/page-loader'
 import { ErrorState, StateCard } from '@/features/observability/StateCard'
 import { meQuery } from '@/lib/api/auth'
 import { ApiError } from '@/lib/api/client'
@@ -69,7 +69,7 @@ function Redirect({ id, tab }: { id: string; tab?: string }) {
       replace: true,
     })
   }, [id, tab, navigate])
-  return <Skeleton className="h-24" />
+  return <PageLoader label={copy.loadingAgent} />
 }
 
 function NotFound() {
@@ -115,7 +115,8 @@ function ResolveByName({ name, tab }: { name: string; tab?: string }) {
         replace: true,
       })
   }, [only, tab, navigate])
-  if (dir.isPending || only || (miss && dir.isFetching)) return <Skeleton className="h-24" />
+  if (dir.isPending || only || (miss && dir.isFetching))
+    return <PageLoader label={copy.loadingAgent} />
   if (dir.isError) return <ErrorState error={dir.error} onRetry={() => void dir.refetch()} />
   if (!matches.length) return <NotFound />
   return (
@@ -179,13 +180,7 @@ function AgentDetail({ id, tab }: { id: string; tab?: string }) {
     if (badTab) void navigate({ to: '.', search: {}, replace: true })
   }, [badTab, navigate])
 
-  if (detail.isPending)
-    return (
-      <div className="space-y-3" aria-busy="true">
-        <Skeleton className="h-16" />
-        <Skeleton className="h-64" />
-      </div>
-    )
+  if (detail.isPending) return <PageLoader label={copy.loadingAgent} />
   if (detail.isError) {
     return detail.error instanceof ApiError &&
       (detail.error.status === 404 || detail.error.status === 403) ? (
@@ -365,7 +360,7 @@ function Header({
                 <Button
                   variant="outline"
                   size="sm"
-                  className="size-9 p-0 pointer-coarse:size-11"
+                  className="size-8 p-0 pointer-coarse:size-11"
                   aria-label={copy.moreActionsFor(agent.displayName)}
                 >
                   <MoreHorizontal className="size-4" aria-hidden />

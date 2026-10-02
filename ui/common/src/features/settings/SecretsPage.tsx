@@ -9,13 +9,14 @@
  */
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useQuery } from '@tanstack/react-query'
-import { Copy, Eye, EyeOff, Lock, Plus, Trash2 } from 'lucide-react'
+import { Copy, Eye, EyeOff, KeyRound, Lock, Plus, Trash2 } from 'lucide-react'
 import { useEffect, useId, useRef, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { toast } from 'sonner'
 import { z } from 'zod'
 import { PageHeader } from '@/components/shared/page-header'
-import { PanelError, PanelSkeleton } from '@/components/shared/panel'
+import { PageLoader } from '@/components/shared/page-loader'
+import { PanelError } from '@/components/shared/panel'
 import { EmptyState } from '@/components/shared/state-card'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -108,10 +109,10 @@ export function SecretsPage() {
     })
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-6">
       <PageHeader title={copy.title} description={copy.sub} />
       {secrets.isPending ? (
-        <PanelSkeleton height={140} />
+        <PageLoader label={copy.loading} />
       ) : secrets.isError ? (
         <PanelError
           error={secrets.error}
@@ -119,104 +120,107 @@ export function SecretsPage() {
           onRetry={() => void secrets.refetch()}
         />
       ) : (
-        <>
+        // One card: the secrets, then the add row on its muted footer strip.
+        <Card className="@container gap-0 overflow-hidden py-0">
           {secrets.data.length === 0 ? (
-            <EmptyState title={copy.empty} />
+            <EmptyState icon={KeyRound} title={copy.empty} className="rounded-none border-0">
+              {copy.emptyText}
+            </EmptyState>
           ) : (
-            <Card className="gap-0 py-0">
-              <ul className="divide-y divide-border">
-                {secrets.data.map((s) => {
-                  const value = shown.get(s.name)
-                  const pending = w.read.isPending && w.read.variables === s.name
-                  if (confirming === s.name) {
-                    const used = configsUsing(configs.data, s.name)
-                    return (
-                      <li key={s.name} className="flex flex-wrap items-center gap-3 px-4 py-3">
-                        <Name name={s.name} />
-                        <span className="text-sm">
-                          {copy.confirm}
-                          {used.length ? (
-                            <span className="text-muted-foreground">
-                              {' '}
-                              {copy.usedBy(used.join(', '))}
-                            </span>
-                          ) : null}
-                        </span>
-                        <span className="ml-auto flex gap-2">
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => setConfirming(null)}
-                            disabled={w.remove.isPending}
-                          >
-                            {copy.cancel}
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="destructive"
-                            onClick={() => remove(s.name)}
-                            disabled={w.remove.isPending}
-                          >
-                            {copy.confirmDelete}
-                          </Button>
-                        </span>
-                      </li>
-                    )
-                  }
+            <ul className="divide-y divide-border">
+              {secrets.data.map((s) => {
+                const value = shown.get(s.name)
+                const pending = w.read.isPending && w.read.variables === s.name
+                if (confirming === s.name) {
+                  const used = configsUsing(configs.data, s.name)
                   return (
-                    <li
-                      key={s.name}
-                      className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 px-4 py-3 @[640px]:grid-cols-[minmax(0,14rem)_minmax(0,1fr)_auto_auto]"
-                    >
+                    <li key={s.name} className="flex flex-wrap items-center gap-3 px-4 py-3">
                       <Name name={s.name} />
-                      <span
-                        className="order-3 col-span-2 truncate font-mono text-xs text-muted-foreground @[640px]:order-none @[640px]:col-span-1"
-                        title={value}
-                      >
-                        {value ?? copy.masked}
+                      <span className="text-sm">
+                        {copy.confirm}
+                        {used.length ? (
+                          <span className="text-muted-foreground">
+                            {' '}
+                            {copy.usedBy(used.join(', '))}
+                          </span>
+                        ) : null}
                       </span>
-                      <span className="order-4 text-xs text-muted-foreground @[640px]:order-none">
-                        {copy.updated(ago(s.updated_at || s.created_at, now))}
-                      </span>
-                      <span className="flex justify-end gap-1">
+                      <span className="ml-auto flex gap-2">
                         <Button
-                          size="icon"
+                          size="sm"
                           variant="ghost"
-                          aria-pressed={value !== undefined}
-                          aria-label={value !== undefined ? copy.hide(s.name) : copy.show(s.name)}
-                          disabled={pending}
-                          onClick={() => reveal(s.name)}
+                          onClick={() => setConfirming(null)}
+                          disabled={w.remove.isPending}
                         >
-                          {value !== undefined ? <EyeOff aria-hidden /> : <Eye aria-hidden />}
+                          {copy.cancel}
                         </Button>
                         <Button
-                          size="icon"
-                          variant="ghost"
-                          aria-label={copy.copy(s.name)}
-                          onClick={() => void copyValue(s.name)}
+                          size="sm"
+                          variant="destructive"
+                          onClick={() => remove(s.name)}
+                          disabled={w.remove.isPending}
                         >
-                          <Copy aria-hidden />
-                        </Button>
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          aria-label={copy.delete(s.name)}
-                          onClick={() => setConfirming(s.name)}
-                        >
-                          <Trash2 aria-hidden />
+                          {copy.confirmDelete}
                         </Button>
                       </span>
                     </li>
                   )
-                })}
-              </ul>
-            </Card>
+                }
+                return (
+                  <li
+                    key={s.name}
+                    className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 px-4 py-3 @[640px]:grid-cols-[minmax(0,14rem)_minmax(0,1fr)_auto_auto]"
+                  >
+                    <Name name={s.name} />
+                    <span
+                      className="order-3 col-span-2 truncate font-mono text-xs text-muted-foreground @[640px]:order-none @[640px]:col-span-1"
+                      title={value}
+                    >
+                      {value ?? copy.masked}
+                    </span>
+                    <span className="order-4 text-xs text-muted-foreground @[640px]:order-none">
+                      {copy.updated(ago(s.updated_at || s.created_at, now))}
+                    </span>
+                    <span className="flex justify-end gap-1">
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        aria-pressed={value !== undefined}
+                        aria-label={value !== undefined ? copy.hide(s.name) : copy.show(s.name)}
+                        disabled={pending}
+                        onClick={() => reveal(s.name)}
+                      >
+                        {value !== undefined ? <EyeOff aria-hidden /> : <Eye aria-hidden />}
+                      </Button>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        aria-label={copy.copy(s.name)}
+                        onClick={() => void copyValue(s.name)}
+                      >
+                        <Copy aria-hidden />
+                      </Button>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        aria-label={copy.delete(s.name)}
+                        onClick={() => setConfirming(s.name)}
+                      >
+                        <Trash2 aria-hidden />
+                      </Button>
+                    </span>
+                  </li>
+                )
+              })}
+            </ul>
           )}
-          <AddSecret />
-        </>
+          <div className="border-t border-border bg-muted/40 px-4 py-4">
+            <AddSecret />
+          </div>
+        </Card>
       )}
-      <p className="flex items-start gap-2 rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground">
-        <Lock aria-hidden className="mt-0.5 size-4 shrink-0" />
+      <p className="flex items-start gap-2 px-1 text-xs text-muted-foreground">
+        <Lock aria-hidden className="mt-px size-3.5 shrink-0" />
         {copy.note}
       </p>
     </div>
@@ -225,7 +229,7 @@ export function SecretsPage() {
 
 function Name({ name }: { name: string }) {
   return (
-    <span className="flex min-w-0 items-center gap-2 font-mono text-sm">
+    <span className="flex min-w-0 items-center gap-2 text-sm">
       <Lock aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
       <span className="truncate">{name}</span>
     </span>
@@ -275,7 +279,6 @@ function AddSecretForm({ onSaved }: { onSaved: () => void }) {
         <FieldLabel htmlFor={`${id}-name`}>{copy.name}</FieldLabel>
         <Input
           id={`${id}-name`}
-          className="font-mono"
           placeholder={copy.namePlaceholder}
           maxLength={128}
           autoComplete="off"
@@ -298,7 +301,12 @@ function AddSecretForm({ onSaved }: { onSaved: () => void }) {
         />
         <FieldError errors={[errors.value]} />
       </Field>
-      <Button type="submit" className="@[640px]:mt-[1.375rem]" disabled={add.isPending}>
+      {/* Level with the inputs (same h-9): pushed down by the label row, text-sm × leading-snug plus the field's gap-1.5. */}
+      <Button
+        type="submit"
+        className="@[640px]:mt-[calc(0.875rem*1.375+0.375rem)]"
+        disabled={add.isPending}
+      >
         <Plus aria-hidden /> {add.isPending ? copy.adding : copy.add}
       </Button>
     </form>

@@ -126,6 +126,12 @@ describe('theme contrast (WCAG AA)', () => {
           contrast('--accent-foreground', '--accent', t),
           'active nav / badge text on its tint',
         ).toBeGreaterThanOrEqual(4.5)
+        // A hovered chat rail row (--muted) keeps its secondary line (agent · time) readable; the open row's line takes
+        // --accent-foreground, checked above.
+        expect(
+          contrast('--muted-foreground', '--muted', t),
+          'secondary text on the hover fill',
+        ).toBeGreaterThanOrEqual(4.5)
         expect(contrast('--ring', '--background', t), 'focus ring').toBeGreaterThanOrEqual(3)
         // Logotypes are exempt from WCAG contrast; light mode's yellow-600 mark is ~2.9:1 by design (§6.4).
         if (dark)
@@ -145,40 +151,40 @@ describe('theme contrast (WCAG AA)', () => {
     }
   }
 
-  it('keeps the login showcase readable (its tokens are the same in every theme and mode)', () => {
-    const t = block(':root')
-    expect(
-      contrast('--showcase-foreground', '--showcase', t),
-      'text on the panel',
-    ).toBeGreaterThanOrEqual(7)
-    expect(
-      contrast('--showcase-foreground', '--showcase-tile', t),
-      'text over a tile',
-    ).toBeGreaterThanOrEqual(7)
-    expect(
-      contrast('--showcase-accent', '--showcase', t),
-      'typed word on the panel',
-    ).toBeGreaterThanOrEqual(7)
-    // The card's text sits on its 50% black fill over whichever glow hue is behind it.
-    const halfBlack = (hex: string) =>
+  it('keeps the login headline card readable over every hue of the glow, in both modes', () => {
+    // The card's glass over whichever glow hue (or the page) is behind it: 58% white in light mode, 62% black in dark.
+    const blend = (hex: string, toward: number, amount: number) =>
       '#' +
       [1, 3, 5]
         .map((i) =>
-          Math.round(Number.parseInt(hex.slice(i, i + 2), 16) / 2)
+          Math.round(toward * amount + Number.parseInt(hex.slice(i, i + 2), 16) * (1 - amount))
             .toString(16)
             .padStart(2, '0'),
         )
         .join('')
-    for (const g of ['base', 1, 2, 3, 4]) {
-      const over = { ...t, '--card-over-glow': halfBlack(t[`--showcase-glow-${g}`]!) }
-      expect(
-        contrast('--showcase-foreground', '--card-over-glow', over),
-        `text over glow ${g}`,
-      ).toBeGreaterThanOrEqual(4.5)
-      expect(
-        contrast('--showcase-accent', '--card-over-glow', over),
-        `typed word over glow ${g}`,
-      ).toBeGreaterThanOrEqual(4.5)
+    const modes = [
+      { name: 'light', t: block(':root'), toward: 255, amount: 0.58 },
+      { name: 'dark', t: { ...block(':root'), ...block('.dark') }, toward: 0, amount: 0.62 },
+    ]
+    for (const { name, t, toward, amount } of modes) {
+      for (const stop of ['#a49b8d', '#e3b386', '#a8808a', '#7fb08c', '#8c9796', '#faf8f4']) {
+        const over = { ...t, '--card-over-glow': blend(stop, toward, amount) }
+        expect(
+          contrast('--showcase-card-foreground', '--card-over-glow', over),
+          `${name}: text over ${stop}`,
+        ).toBeGreaterThanOrEqual(4.5)
+        // The line under it: an opaque colour in light mode (dark mode's is translucent white, above the text's 4.5).
+        if (name === 'light')
+          expect(
+            contrast('--showcase-card-muted', '--card-over-glow', over),
+            `${name}: line over ${stop}`,
+          ).toBeGreaterThanOrEqual(4.5)
+        // The word is heading-size (30-42 px semibold): WCAG's large-text minimum.
+        expect(
+          contrast('--showcase-accent', '--card-over-glow', over),
+          `${name}: gold over ${stop}`,
+        ).toBeGreaterThanOrEqual(3)
+      }
     }
   })
 

@@ -22,8 +22,15 @@ import { ELAPSED_TICK_MS } from './tuning'
 import { openRegistryView } from './follower'
 import { dismissImport, importFor, startImport, subscribeUploads } from './uploads'
 import { ProgressSegments } from './components/ProgressSegments'
+import type { DeployStarted } from './UploadTab'
 
-export function RegistryTab({ userId }: { userId: string }) {
+export function RegistryTab({
+  userId,
+  onStarted,
+}: {
+  userId: string
+  onStarted?: (to: DeployStarted) => void
+}) {
   const ids = useId()
   const qc = useQueryClient()
   const navigate = useNavigate()
@@ -41,9 +48,12 @@ export function RegistryTab({ userId }: { userId: string }) {
   useEffect(() => {
     if (state?.phase !== 'done' || !state.containerName) return
     dismissImport(userId)
-    if (state.buildId) void navigate({ to: '/builds/$buildId', params: { buildId: state.buildId } })
+    if (onStarted)
+      onStarted(state.buildId ? { buildId: state.buildId } : { agentId: state.agentId })
+    else if (state.buildId)
+      void navigate({ to: '/builds/$buildId', params: { buildId: state.buildId } })
     else void navigate({ to: '/agents/$agentId', params: { agentId: state.agentId }, search: {} })
-  }, [state, userId, navigate])
+  }, [state, userId, navigate, onStarted])
 
   const err = state?.phase === 'failed' ? state.error : null
   const errText = err ? (typeof err.body === 'string' && err.body ? err.body : err.message) : null

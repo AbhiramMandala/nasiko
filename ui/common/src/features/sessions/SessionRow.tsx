@@ -13,7 +13,6 @@ import { AgentLink } from '@/features/agents/components/AgentLink'
 import { OpenChatLink } from '@/features/chat/components/OpenChatLink'
 import { copy, STATUS_LABEL } from '@/features/observability/copy'
 import { sessionCost, type Status } from '@/features/observability/sessions'
-import { morphId } from '@/features/observability/tuning'
 import type { SessionSummary } from '@/features/observability/types'
 import { fmtDuration, fmtMoney, fmtTokens, fmtUtcDayTime, fmtUtcTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -73,8 +72,6 @@ export const SessionRow = memo(function SessionRow({
   ].join(' · ')
   return (
     <m.li
-      layout="position"
-      layoutDependency={`${expanded}|${status}`}
       initial={fresh ? { opacity: 0, y: -8 } : false}
       animate={{ opacity: 1, y: 0 }}
       className="border-b border-border last:border-b-0"
@@ -109,10 +106,7 @@ export const SessionRow = memo(function SessionRow({
           <span className="hidden truncate md:inline" title={rawName || undefined}>
             {agentLabel}
           </span>
-          <m.span
-            layoutId={morphId(`session-title-${s.session_id}`)}
-            className="hidden truncate md:inline"
-          >
+          <span className="hidden truncate md:inline">
             “{input}”
             {badges.length ? (
               <span className="ml-2 inline-flex gap-1 align-middle">
@@ -131,7 +125,7 @@ export const SessionRow = memo(function SessionRow({
                 ))}
               </span>
             ) : null}
-          </m.span>
+          </span>
           <span className="hidden text-right font-medium tabular-nums md:inline">
             {fmtMoney(sessionCost(s))}
           </span>

@@ -4,6 +4,7 @@
  * contract is the proposed R-L10 (mocked; no server has it yet).
  */
 import { AlertTriangle, CheckCircle2, Info, OctagonX } from 'lucide-react'
+import { EmptyState } from '@/components/shared/state-card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -15,7 +16,6 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { StateCard } from '@/features/observability/StateCard'
 import { fmtInt, fmtMoney, fmtShortDay } from '@/lib/format'
 import { isBudgetsAbsent } from '@/lib/api/detect'
 import { cn } from '@/lib/utils'
@@ -117,14 +117,16 @@ export function BudgetsSection({
             title={copy.budgetsFailed}
           />
         ) : list.length === 0 ? (
-          <StateCard
+          <EmptyState
             title={copy.noBudgets}
             action={
               <Button size="sm" className="pointer-coarse:min-h-11" onClick={onNew}>
                 {copy.createFirstBudget}
               </Button>
             }
-          />
+          >
+            {copy.noBudgetsText}
+          </EmptyState>
         ) : (
           <div className="rounded-lg border border-border bg-card">
             <Table aria-label={copy.budgetsTitle} className="max-lg:block">
@@ -342,7 +344,7 @@ function AlertsSection({
       ) : alerts.isError && !alerts.data ? (
         <SectionError error={alerts.error} onRetry={() => void alerts.refetch()} />
       ) : rows.length === 0 ? (
-        <p className="text-sm text-muted-foreground">{copy.noAlerts}</p>
+        <EmptyState title={copy.noAlerts} />
       ) : (
         <ul
           aria-label={copy.alertsTitle}

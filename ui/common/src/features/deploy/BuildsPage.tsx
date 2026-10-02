@@ -4,13 +4,15 @@
  * Below 768 px rows become two lines (design review 16).
  */
 import { Link } from '@tanstack/react-router'
+import { Hammer, SearchX } from 'lucide-react'
 import { useDeferredValue } from 'react'
 import { PageHeader } from '@/components/shared/page-header'
+import { PageLoader } from '@/components/shared/page-loader'
+import { AgentsNav } from '@/features/agents/components/bits'
 import { PanelError } from '@/components/shared/panel'
 import { SearchInput } from '@/components/shared/search-input'
 import { EmptyState, StateCard } from '@/components/shared/state-card'
 import { Button } from '@/components/ui/button'
-import { Skeleton } from '@/components/ui/skeleton'
 import {
   Table,
   TableBody,
@@ -30,6 +32,7 @@ import { BUILDS_FILTERS, type BuildsFilter, type BuildsSearch } from './search'
 import { buildSource, fmtElapsed, isActive } from './steps'
 import type { BuildRecord } from './types'
 import { BuildBadge } from './components/BuildBadge'
+import { DeployAgentButton } from './components/DeployAgentButton'
 
 export function BuildsPage({
   search,
@@ -54,7 +57,12 @@ export function BuildsPage({
     return a ? a.display_name || a.name : copy.builds.unknownAgent
   }
 
-  const header = <PageHeader title={copy.builds.title} description={copy.builds.description} />
+  const header = (
+    <>
+      <PageHeader title={copy.builds.title} description={copy.builds.description} />
+      <AgentsNav current="/builds" />
+    </>
+  )
   const filters = (
     <div className="flex flex-wrap items-center gap-2">
       <ToggleGroup
@@ -96,18 +104,12 @@ export function BuildsPage({
   else if (data.noRights) body = <StateCard title={copy.builds.noRights} />
   else if (data.error && !all.length)
     body = <PanelError error={data.error} onRetry={data.retry} what={copy.builds.what} />
-  else if (data.isPending && !all.length)
-    body = (
-      <div className="flex flex-col gap-2" aria-busy="true">
-        {Array.from({ length: 5 }, (_, i) => (
-          <Skeleton key={i} className="h-11 w-full" />
-        ))}
-      </div>
-    )
+  else if (data.isPending && !all.length) body = <PageLoader label={copy.builds.loading} />
   else if (!all.length) {
     const filtered = filter !== 'all' || !!search.q || page > 0
     body = filtered ? (
       <EmptyState
+        icon={SearchX}
         title={copy.builds.noMatch}
         action={
           <Button
@@ -119,9 +121,13 @@ export function BuildsPage({
             {copy.builds.clearFilters}
           </Button>
         }
-      />
+      >
+        {copy.builds.noMatchHint}
+      </EmptyState>
     ) : (
-      <EmptyState title={copy.builds.empty}>{copy.builds.emptyHint}</EmptyState>
+      <EmptyState icon={Hammer} title={copy.builds.empty} action={<DeployAgentButton />}>
+        {copy.builds.emptyHint}
+      </EmptyState>
     )
   } else {
     body = (

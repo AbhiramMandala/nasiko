@@ -9,10 +9,11 @@
  */
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, useRouter } from '@tanstack/react-router'
-import { m } from 'motion/react'
-import { Link2, Table2, Workflow } from 'lucide-react'
+import { Link2, ListTree, Table2, Workflow } from 'lucide-react'
 import { useDeferredValue, useMemo, useState } from 'react'
 import { PageHeader } from '@/components/shared/page-header'
+import { PageLoader } from '@/components/shared/page-loader'
+import { EmptyState } from '@/components/shared/state-card'
 import { SearchInput } from '@/components/shared/search-input'
 import {
   Breadcrumb,
@@ -22,7 +23,6 @@ import {
   BreadcrumbSeparator,
 } from '@/components/ui/breadcrumb'
 import { Button } from '@/components/ui/button'
-import { Skeleton } from '@/components/ui/skeleton'
 import { Toggle } from '@/components/ui/toggle'
 import { OpenChatLink } from '@/features/chat/components/OpenChatLink'
 import {
@@ -33,7 +33,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet'
-import { pickShared } from '@/app/shell/context'
+import { pickShared, withoutWindow } from '@/app/shell/context'
 import {
   narrativeText,
   traceNarrative,
@@ -53,8 +53,8 @@ import {
   traceDurationMs,
   type FlatSpan,
 } from '@/features/observability/spans'
-import { ErrorState, StateCard } from '@/features/observability/StateCard'
-import { IN_PROGRESS_MS, morphId } from '@/features/observability/tuning'
+import { ErrorState } from '@/features/observability/StateCard'
+import { IN_PROGRESS_MS } from '@/features/observability/tuning'
 import type { TraceDetail, TraceEntry } from '@/features/observability/types'
 import { AgentLink } from '@/features/agents/components/AgentLink'
 import { useAgentsDirectory } from '@/features/agents/api'
@@ -284,6 +284,8 @@ export function SessionTracePage({
       </div>
     )
   }
+  // The header is built from the session, so the whole page waits for it.
+  if (session.isPending) return <PageLoader label="Loading session" />
 
   return (
     <div className="flex flex-col gap-4">
@@ -292,7 +294,7 @@ export function SessionTracePage({
           <Crumbs back={back} day={search.day} title={session.data?.title ?? sessionId} />
         }
         title={
-          <m.span layoutId={morphId(`session-title-${sessionId}`)} className="inline-block">
+          <span className="inline-block">
             {session.data ? (
               <>
                 Session ·{' '}
@@ -310,7 +312,7 @@ export function SessionTracePage({
             ) : (
               'Loading session…'
             )}
-          </m.span>
+          </span>
         }
         // One-line rollup of the selected trace (Extend's "4 tool calls, 11s thinking").
         description={
@@ -333,7 +335,7 @@ export function SessionTracePage({
                 <Link
                   to="/tokenops"
                   search={{
-                    ...pickShared(search),
+                    ...withoutWindow(search),
                     day: firstStart.slice(0, 10),
                     agent: agentRaw || undefined,
                     open: 'spend',
@@ -353,13 +355,10 @@ export function SessionTracePage({
         }
       />
 
-      {session.isPending ? (
-        <div aria-busy="true">
-          <span className="sr-only">Loading</span>
-          <Skeleton aria-hidden className="h-24 rounded-lg bg-muted" />
-        </div>
-      ) : traces.length === 0 ? (
-        <StateCard title={copy.noTraces} />
+      {traces.length === 0 ? (
+        <EmptyState icon={ListTree} title={copy.noTraces}>
+          {copy.noTracesBody}
+        </EmptyState>
       ) : (
         <>
           {traces.length > 1 ? (
@@ -382,10 +381,7 @@ export function SessionTracePage({
               notFound={copy.traceNotFound}
             />
           ) : !trace.data ? (
-            <div aria-busy="true">
-              <span className="sr-only">Loading trace</span>
-              <Skeleton aria-hidden className="h-40 rounded-lg bg-muted" />
-            </div>
+            <PageLoader label="Loading trace" />
           ) : (
             <>
               <Narrative
@@ -435,7 +431,8 @@ export function SessionTracePage({
                       <Table2 className="size-4" aria-hidden /> {asTable ? 'Waterfall' : 'Table'}
                     </Button>
                   </div>
-                  <Legend />
+                  {/* The legend explains the bars; the table names each kind in its own column. */}
+                  {asTable ? null : <Legend />}
                   {asTable ? (
                     <SpanTable spans={matches} selectedId={selected?.node.id} onSelect={select} />
                   ) : (
@@ -454,16 +451,19 @@ export function SessionTracePage({
                   )}
                 </section>
                 {selected && traceId && !narrow ? (
-                  <SpanPanel
-                    traceId={traceId}
-                    span={selected}
-                    tab={panelTab}
-                    onTabChange={setPanelTab}
-                    parentName={parentName}
-                    position={position}
-                    onPrev={() => step(-1)}
-                    onNext={() => step(1)}
-                  />
+                  // Sticky: on a long trace the panel (and its ↑/↓) stays in view while the tree scrolls.
+                  <div className="sticky top-4 max-h-[calc(100dvh-2rem)] self-start overflow-y-auto">
+                    <SpanPanel
+                      traceId={traceId}
+                      span={selected}
+                      tab={panelTab}
+                      onTabChange={setPanelTab}
+                      parentName={parentName}
+                      position={position}
+                      onPrev={() => step(-1)}
+                      onNext={() => step(1)}
+                    />
+                  </div>
                 ) : null}
               </div>
               {selected && traceId && narrow ? (

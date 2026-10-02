@@ -145,7 +145,7 @@ export function Composer({
               reason ? 'chat-composer-hint chat-composer-keys' : 'chat-composer-keys'
             }
             aria-invalid={tooLong || undefined}
-            className="field-sizing-content max-h-44 min-h-11 resize-none rounded-xl border-0 bg-transparent px-3 pt-3 shadow-none focus-visible:ring-0 dark:bg-transparent"
+            className="field-sizing-content max-h-44 min-h-11 resize-none rounded-xl border-0 bg-transparent px-3 pt-3 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 dark:bg-transparent"
           />
           {(mode.kind === 'locked' && mode.newChat) || mode.kind === 'paused' ? (
             <div className="flex flex-wrap items-center gap-2 px-3 pt-1">

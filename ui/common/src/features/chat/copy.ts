@@ -296,6 +296,7 @@ export const copy = {
   groupOlder: 'Older',
   noLoadedMatch: (q: string) => `No loaded chats match '${q}'`,
   loadMoreToSearch: 'Load more to search older chats',
+  noMatchHint: 'Try another word, or clear the filter.',
   // New chat (v1c §5.4).
   heroChooseTitle: 'Start a chat',
   heroChooseSubline: 'Pick an agent, or let the Orchestrator choose.',
@@ -317,6 +318,7 @@ export const copy = {
   viewRecorded: (n: string) => `Recorded (${n})`,
   viewRecordedShort: 'Recorded',
   noRecorded: 'No recorded sessions yet',
+  noRecordedHint: 'Coding-harness sessions show here, read-only, once a harness records one.',
   noLiveLoaded: 'No live chats in the loaded list',
   // Recorded harness chats (v1c §5.7).
   toolCallsSummary: (n: number, failed: number) =>
@@ -345,6 +347,7 @@ export const copy = {
   viewWaitingCount: (n: string) => `Waiting (${n})`,
   noWaiting: 'No waiting requests in your loaded chats.',
   noWaitingMatch: (q: string) => `No waiting chats match '${q}'.`,
+  noWaitingHint: 'When an agent asks you to approve or answer something, the chat shows here.',
   outsideChat: (n: number) =>
     n === 1
       ? "1 request couldn't be linked to a chat."

@@ -29,6 +29,8 @@ import { Route as AppMcpConnectorIdRouteImport } from './../../common/src/routes
 import { Route as AppSessionsIndexRouteImport } from './../../common/src/routes/_app/sessions.index'
 import { Route as AppSessionsSessionIdRouteImport } from './../../common/src/routes/_app/sessions.$sessionId'
 import { Route as AppSettingsIndexRouteImport } from './../../common/src/routes/_app/settings.index'
+import { Route as AppSettingsAppearanceRouteImport } from './../../common/src/routes/_app/settings.appearance'
+import { Route as AppSettingsPasswordRouteImport } from './../../common/src/routes/_app/settings.password'
 import { Route as AppSettingsSecretsRouteImport } from './../../common/src/routes/_app/settings.secrets'
 import { Route as AppWorkflowsIndexRouteImport } from './../../common/src/routes/_app/workflows.index'
 import { Route as AppWorkflowsWorkflowIdRouteImport } from './../../common/src/routes/_app/workflows.$workflowId'
@@ -135,6 +137,16 @@ const AppSettingsIndexRoute = AppSettingsIndexRouteImport.update({
   path: '/settings/',
   getParentRoute: () => AppRoute,
 } as any)
+const AppSettingsAppearanceRoute = AppSettingsAppearanceRouteImport.update({
+  id: '/settings/appearance',
+  path: '/settings/appearance',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppSettingsPasswordRoute = AppSettingsPasswordRouteImport.update({
+  id: '/settings/password',
+  path: '/settings/password',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppSettingsSecretsRoute = AppSettingsSecretsRouteImport.update({
   id: '/settings/secrets',
   path: '/settings/secrets',
@@ -180,6 +192,8 @@ export interface FileRoutesByFullPath {
   '/chat/$sessionId': typeof AppChatSessionIdRoute
   '/mcp/$connectorId': typeof AppMcpConnectorIdRoute
   '/sessions/$sessionId': typeof AppSessionsSessionIdRoute
+  '/settings/appearance': typeof AppSettingsAppearanceRoute
+  '/settings/password': typeof AppSettingsPasswordRoute
   '/settings/secrets': typeof AppSettingsSecretsRoute
   '/workflows/$workflowId': typeof AppWorkflowsWorkflowIdRoute
   '/workflows/drafts': typeof AppWorkflowsDraftsRoute
@@ -207,6 +221,8 @@ export interface FileRoutesByTo {
   '/chat/$sessionId': typeof AppChatSessionIdRoute
   '/mcp/$connectorId': typeof AppMcpConnectorIdRoute
   '/sessions/$sessionId': typeof AppSessionsSessionIdRoute
+  '/settings/appearance': typeof AppSettingsAppearanceRoute
+  '/settings/password': typeof AppSettingsPasswordRoute
   '/settings/secrets': typeof AppSettingsSecretsRoute
   '/workflows/$workflowId': typeof AppWorkflowsWorkflowIdRoute
   '/workflows/drafts': typeof AppWorkflowsDraftsRoute
@@ -236,6 +252,8 @@ export interface FileRoutesById {
   '/_app/chat/$sessionId': typeof AppChatSessionIdRoute
   '/_app/mcp/$connectorId': typeof AppMcpConnectorIdRoute
   '/_app/sessions/$sessionId': typeof AppSessionsSessionIdRoute
+  '/_app/settings/appearance': typeof AppSettingsAppearanceRoute
+  '/_app/settings/password': typeof AppSettingsPasswordRoute
   '/_app/settings/secrets': typeof AppSettingsSecretsRoute
   '/_app/workflows/$workflowId': typeof AppWorkflowsWorkflowIdRoute
   '/_app/workflows/drafts': typeof AppWorkflowsDraftsRoute
@@ -265,6 +283,8 @@ export interface FileRouteTypes {
     | '/chat/$sessionId'
     | '/mcp/$connectorId'
     | '/sessions/$sessionId'
+    | '/settings/appearance'
+    | '/settings/password'
     | '/settings/secrets'
     | '/workflows/$workflowId'
     | '/workflows/drafts'
@@ -292,6 +312,8 @@ export interface FileRouteTypes {
     | '/chat/$sessionId'
     | '/mcp/$connectorId'
     | '/sessions/$sessionId'
+    | '/settings/appearance'
+    | '/settings/password'
     | '/settings/secrets'
     | '/workflows/$workflowId'
     | '/workflows/drafts'
@@ -320,6 +342,8 @@ export interface FileRouteTypes {
     | '/_app/chat/$sessionId'
     | '/_app/mcp/$connectorId'
     | '/_app/sessions/$sessionId'
+    | '/_app/settings/appearance'
+    | '/_app/settings/password'
     | '/_app/settings/secrets'
     | '/_app/workflows/$workflowId'
     | '/_app/workflows/drafts'
@@ -481,6 +505,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSettingsIndexRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/settings/appearance': {
+      id: '/_app/settings/appearance'
+      path: '/settings/appearance'
+      fullPath: '/settings/appearance'
+      preLoaderRoute: typeof AppSettingsAppearanceRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/settings/password': {
+      id: '/_app/settings/password'
+      path: '/settings/password'
+      fullPath: '/settings/password'
+      preLoaderRoute: typeof AppSettingsPasswordRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/settings/secrets': {
       id: '/_app/settings/secrets'
       path: '/settings/secrets'
@@ -539,6 +577,8 @@ interface AppRouteChildren {
   AppChatSessionIdRoute: typeof AppChatSessionIdRoute
   AppMcpConnectorIdRoute: typeof AppMcpConnectorIdRoute
   AppSessionsSessionIdRoute: typeof AppSessionsSessionIdRoute
+  AppSettingsAppearanceRoute: typeof AppSettingsAppearanceRoute
+  AppSettingsPasswordRoute: typeof AppSettingsPasswordRoute
   AppSettingsSecretsRoute: typeof AppSettingsSecretsRoute
   AppWorkflowsWorkflowIdRoute: typeof AppWorkflowsWorkflowIdRoute
   AppWorkflowsDraftsRoute: typeof AppWorkflowsDraftsRoute
@@ -566,6 +606,8 @@ const AppRouteChildren: AppRouteChildren = {
   AppChatSessionIdRoute: AppChatSessionIdRoute,
   AppMcpConnectorIdRoute: AppMcpConnectorIdRoute,
   AppSessionsSessionIdRoute: AppSessionsSessionIdRoute,
+  AppSettingsAppearanceRoute: AppSettingsAppearanceRoute,
+  AppSettingsPasswordRoute: AppSettingsPasswordRoute,
   AppSettingsSecretsRoute: AppSettingsSecretsRoute,
   AppWorkflowsWorkflowIdRoute: AppWorkflowsWorkflowIdRoute,
   AppWorkflowsDraftsRoute: AppWorkflowsDraftsRoute,

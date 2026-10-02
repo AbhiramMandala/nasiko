@@ -42,7 +42,7 @@ export function login(username: string, password: string, timeout?: number): Pro
  * Rejects absolute URLs, protocol-relative `//host`, backslash tricks and any
  * /login variant (which would loop).
  */
-export function safeRedirect(target: unknown, fallback = '/tokenops'): string {
+export function safeRedirect(target: unknown, fallback = '/'): string {
   if (typeof target !== 'string') return fallback
   if (!target.startsWith('/') || target.startsWith('//') || target.includes('\\')) return fallback
   if (/^\/login(?=$|[/?#])/.test(target)) return fallback

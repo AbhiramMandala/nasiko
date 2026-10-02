@@ -1,33 +1,36 @@
 /**
- * Self-service password change, opened from the account menu (nasiko-cloud-rs `43833316`,
- * ui/common/features/change-password-modal.js). `POST /api/auth/change-password` confirms with the current password:
+ * Settings → Account → Password: self-service password change (nasiko-cloud-rs `43833316`,
+ * ui/common/features/change-password-modal.js, here in the page). `POST /api/auth/change-password` confirms with the
+ * current password:
  * - 200: this browser gets a fresh cookie; every other session is revoked.
  * - 204: the password changed, but no new session came back and the cookie was cleared, so sign out and say why.
  * - `{error, code}` errors land on the field the code names (`current_password_incorrect` is a 403, never session
  *   loss); anything else is a toast.
- * Mounted only while open (deferred from AppSidebar), so each open starts with empty fields.
+ * The form is remounted after a change (never `reset()`, see CLAUDE.md Settings), so its fields start empty.
  */
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Eye, EyeOff } from 'lucide-react'
 import { useNavigate } from '@tanstack/react-router'
 import { useId, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { toast } from 'sonner'
+import { signOut } from '@/app/shell/signOut'
+import { PageHeader } from '@/components/shared/page-header'
 import { Button } from '@/components/ui/button'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
-import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupInput,
+} from '@/components/ui/input-group'
 import { apiFetch, ApiError } from '@/lib/api/client'
-import type { Me } from '@/lib/api/auth'
+import { meQuery, type Me } from '@/lib/api/auth'
 import { PASSWORD_MAX, PASSWORD_MIN, passwordProblem, type PasswordProblem } from '@/lib/password'
-import { passwordCopy as copy } from './passwordCopy'
-import { signOut } from './signOut'
+import { SettingRow, SettingRows } from './components/SettingRow'
+import { copy as settingsCopy } from './copy'
+
+const copy = settingsCopy.password
 
 type Values = { current: string; next: string; confirm: string }
 
@@ -52,11 +55,30 @@ function firstProblem(v: Values): [keyof Values, string] | null {
 /** The server's messages are lowercase fragments; the field reads them as sentences. */
 const sentence = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 
-export function ChangePasswordDialog({ me, onClose }: { me: Me; onClose: () => void }) {
+export function PasswordPage() {
+  const me = useQuery(meQuery)
+  const [generation, setGeneration] = useState(0)
+  return (
+    <div className="flex flex-col gap-6">
+      <PageHeader title={copy.label} description={copy.sub} />
+      {me.data ? (
+        <PasswordForm key={generation} me={me.data} onChanged={() => setGeneration((g) => g + 1)} />
+      ) : null}
+    </div>
+  )
+}
+
+function PasswordForm({ me, onChanged }: { me: Me; onChanged: () => void }) {
   const id = useId()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const [busy, setBusy] = useState(false)
+  // Each field reveals on its own (the login page's eye toggle).
+  const [shown, setShown] = useState<Record<keyof Values, boolean>>({
+    current: false,
+    next: false,
+    confirm: false,
+  })
   const form = useForm<Values>({ defaultValues: { current: '', next: '', confirm: '' } })
   const { errors } = form.formState
 
@@ -75,9 +97,9 @@ export function ChangePasswordDialog({ me, onClose }: { me: Me; onClose: () => v
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ current_password: v.current, new_password: v.next }),
       })
-      onClose()
       if (body !== null) {
         toast.success(copy.changed)
+        onChanged()
         return
       }
       await signOut({
@@ -106,65 +128,69 @@ export function ChangePasswordDialog({ me, onClose }: { me: Me; onClose: () => v
     }
   })
 
-  const field = (
+  const row = (
     name: keyof Values,
     label: string,
     placeholder: string,
     autoComplete: string,
     hint?: string,
   ) => (
-    <Field data-invalid={!!errors[name]} className="gap-1.5">
-      <FieldLabel htmlFor={`${id}-${name}`}>{label}</FieldLabel>
-      <Input
-        id={`${id}-${name}`}
-        type="password"
-        autoComplete={autoComplete}
-        placeholder={placeholder}
-        aria-invalid={!!errors[name]}
-        {...form.register(name, {
-          // The message always describes the current value: acting on the field clears it.
-          onChange: () => form.clearErrors(name),
-        })}
-      />
-      {errors[name] ? (
-        <FieldError errors={[errors[name]]} />
-      ) : hint ? (
-        <FieldDescription>{hint}</FieldDescription>
-      ) : null}
-    </Field>
+    <SettingRow
+      htmlFor={`${id}-${name}`}
+      label={label}
+      hint={hint}
+      hintId={hint ? `${id}-${name}-hint` : undefined}
+      error={errors[name]?.message}
+    >
+      <InputGroup>
+        <InputGroupInput
+          id={`${id}-${name}`}
+          type={shown[name] ? 'text' : 'password'}
+          autoComplete={autoComplete}
+          placeholder={placeholder}
+          aria-invalid={!!errors[name]}
+          aria-describedby={hint ? `${id}-${name}-hint` : undefined}
+          {...form.register(name, {
+            // The message always describes the current value: acting on the field clears it.
+            onChange: () => form.clearErrors(name),
+          })}
+        />
+        <InputGroupAddon align="inline-end">
+          <InputGroupButton
+            size="icon-xs"
+            aria-label={copy.show(label)}
+            aria-pressed={shown[name]}
+            aria-controls={`${id}-${name}`}
+            onClick={() => setShown((s) => ({ ...s, [name]: !s[name] }))}
+          >
+            {shown[name] ? <EyeOff aria-hidden /> : <Eye aria-hidden />}
+          </InputGroupButton>
+        </InputGroupAddon>
+      </InputGroup>
+    </SettingRow>
   )
 
   return (
-    <Dialog open onOpenChange={(o) => (o || busy ? null : onClose())}>
-      <DialogContent>
-        <form onSubmit={(e) => void submit(e)} noValidate className="flex flex-col gap-4">
-          <DialogHeader>
-            <DialogTitle>{copy.title}</DialogTitle>
-            <DialogDescription>{copy.others}</DialogDescription>
-          </DialogHeader>
-          {/* Lets a password manager file the new password under the right account. */}
-          <Input type="hidden" autoComplete="username" value={me.username} readOnly />
-          <FieldGroup className="gap-4">
-            {field('current', copy.current, copy.currentPlaceholder, 'current-password')}
-            {field(
-              'next',
-              copy.next,
-              copy.nextPlaceholder,
-              'new-password',
-              copy.policy(PASSWORD_MIN, PASSWORD_MAX),
-            )}
-            {field('confirm', copy.confirm, copy.confirmPlaceholder, 'new-password')}
-          </FieldGroup>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={onClose} disabled={busy}>
-              {copy.cancel}
-            </Button>
-            <Button type="submit" disabled={busy}>
-              {busy ? copy.submitting : copy.submit}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+    <form onSubmit={(e) => void submit(e)} noValidate>
+      {/* Lets a password manager file the new password under the right account. */}
+      <Input type="hidden" autoComplete="username" value={me.username} readOnly />
+      <SettingRows
+        footer={
+          <Button type="submit" size="sm" className="pointer-coarse:min-h-11" disabled={busy}>
+            {busy ? copy.submitting : copy.submit}
+          </Button>
+        }
+      >
+        {row('current', copy.current, copy.currentPlaceholder, 'current-password')}
+        {row(
+          'next',
+          copy.next,
+          copy.nextPlaceholder,
+          'new-password',
+          copy.policy(PASSWORD_MIN, PASSWORD_MAX),
+        )}
+        {row('confirm', copy.confirm, copy.confirmPlaceholder, 'new-password')}
+      </SettingRows>
+    </form>
   )
 }

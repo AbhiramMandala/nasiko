@@ -3,6 +3,7 @@ import { cleanup, screen, within } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 import { seed, setupPinnedSeed } from '@/test/pinnedSeed'
+import { configureMocks } from '@/mocks/handlers'
 import { renderApp } from '@/test/renderApp'
 import { server } from '@/test/setup'
 import { copy as agentsCopy } from '@/features/agents/copy'
@@ -19,6 +20,8 @@ describe('Deploy an agent entry points', () => {
     { timeout: 15_000 },
     async () => {
       server.use(http.get('*/api/agents', () => HttpResponse.json([])))
+      // A server without the onboarding guide: its Setup guide card replaces this deploy card otherwise.
+      configureMocks({ variant: 'onboarding-absent' })
       for (const [path, testId, empty] of [
         ['/', 'overview-first-run', null],
         ['/agents', null, agentsCopy.noAgentsCatalog],
@@ -34,6 +37,7 @@ describe('Deploy an agent entry points', () => {
         expect(scope.getAllByRole('button', { name: /Copy/ }).length).toBeGreaterThan(0)
         cleanup()
       }
+      configureMocks({ variant: null })
     },
   )
 

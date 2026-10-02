@@ -89,12 +89,18 @@ const EMPTY_ITEMS: ItemResults = {
   size: { state: 'unknown' },
 }
 
+/** Where a started deploy goes: the Build page, or the agent when an import didn't build. The onboarding guide passes
+ *  its own handler to stay open (docs/superpowers/specs/2026-10-01-login-onboarding-design.md §3). */
+export type DeployStarted = { buildId: string } | { agentId: string }
+
 export function UploadTab({
   userId,
   prefill,
+  onStarted,
 }: {
   userId: string
   prefill: { name?: string; version?: string }
+  onStarted?: (to: DeployStarted) => void
 }) {
   const ids = useId()
   const qc = useQueryClient()
@@ -143,8 +149,9 @@ export function UploadTab({
   useEffect(() => {
     if (upload?.phase !== 'done') return
     dismissUpload(userId)
-    void navigate({ to: '/builds/$buildId', params: { buildId: upload.buildId } })
-  }, [upload, userId, navigate])
+    if (onStarted) onStarted({ buildId: upload.buildId })
+    else void navigate({ to: '/builds/$buildId', params: { buildId: upload.buildId } })
+  }, [upload, userId, navigate, onStarted])
 
   // An agent with this name that the viewer can see: its current version and the next patch (a 409 caught early).
   const existing = useMemo(
@@ -300,6 +307,7 @@ export function UploadTab({
             <Input
               id={`${ids}-name`}
               readOnly={busy}
+              placeholder={copy.deploy.namePlaceholder}
               autoComplete="off"
               spellCheck={false}
               {...register('name')}
@@ -538,7 +546,8 @@ export function UploadTab({
             </Button>
           )}
         </Card>
-        <div className="@max-[768px]/deploy:hidden">
+        {/* Stays in view under the Deploy page's sticky method row while the form scrolls. */}
+        <div className="sticky top-16 @max-[768px]/deploy:hidden">
           <Requirements items={items} advisory={!!check && !check.readable} />
         </div>
       </form>

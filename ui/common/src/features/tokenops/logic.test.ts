@@ -335,11 +335,11 @@ describe('links and redirects (A18)', () => {
   })
   it('allows only same-app relative redirect targets', () => {
     expect(safeRedirect('/tokenops?preset=7d')).toBe('/tokenops?preset=7d')
-    expect(safeRedirect('//evil.example')).toBe('/tokenops')
-    expect(safeRedirect('https://evil.example')).toBe('/tokenops')
-    expect(safeRedirect('/\\evil')).toBe('/tokenops')
-    expect(safeRedirect('/login?redirect=/x')).toBe('/tokenops')
-    expect(safeRedirect(undefined)).toBe('/tokenops')
+    expect(safeRedirect('//evil.example')).toBe('/')
+    expect(safeRedirect('https://evil.example')).toBe('/')
+    expect(safeRedirect('/\\evil')).toBe('/')
+    expect(safeRedirect('/login?redirect=/x')).toBe('/')
+    expect(safeRedirect(undefined)).toBe('/')
   })
 })
 
@@ -390,8 +390,8 @@ describe('review follow-ups', () => {
   })
 
   it('safeRedirect rejects /login variants but not look-alikes', () => {
-    expect(safeRedirect('/login/')).toBe('/tokenops')
-    expect(safeRedirect('/login#x')).toBe('/tokenops')
+    expect(safeRedirect('/login/')).toBe('/')
+    expect(safeRedirect('/login#x')).toBe('/')
     expect(safeRedirect('/loginhelp')).toBe('/loginhelp')
   })
 })
