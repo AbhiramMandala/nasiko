@@ -27,6 +27,7 @@ pub mod maf;
 pub mod mcp;
 pub mod multipart_util;
 pub mod observability;
+pub mod onboarding;
 pub mod openapi;
 pub mod orchestrator_policy;
 pub mod pool;
@@ -307,6 +308,7 @@ where
         .merge(degradable_routes)
         .merge(chat::router())
         .merge(context_selection::router())
+        .merge(onboarding::router())
         .merge(coding_agent_telemetry::router())
         .merge(maf::router(maf_run_limiter, maf_read_limiter))
         .merge(secrets::router())
