@@ -339,6 +339,29 @@ function afterCustomWrite(qc: QueryClient) {
   void qc.invalidateQueries({ queryKey: providersQuery.queryKey })
 }
 
+/**
+ * `CreateRequest` has no `default_model` (nasiko-cloud-rs 4d57453c; serde drops it), so a default model is set by a
+ * follow-up PATCH. If that fails the provider still exists, so the save succeeds (a retry would register it twice)
+ * and reports `defaultModelSet: false`.
+ */
+async function createCustomProvider({ default_model, ...body }: CreateCustomProviderBody) {
+  const out = await apiData<{ id: string; label: string }>('/api/custom-providers', {
+    method: 'POST',
+    headers: json,
+    body: JSON.stringify(body),
+  })
+  if (!default_model) return { ...out, defaultModelSet: true }
+  const set = await apiData(`/api/custom-providers/${out.id}`, {
+    method: 'PATCH',
+    headers: json,
+    body: JSON.stringify({ default_model }),
+  }).then(
+    () => true,
+    () => false,
+  )
+  return { ...out, defaultModelSet: set }
+}
+
 export function useSaveCustomProvider() {
   const qc = useQueryClient()
   return useMutation({
@@ -348,11 +371,7 @@ export function useSaveCustomProvider() {
         | { mode: 'update'; id: string; body: UpdateCustomProviderBody },
     ) =>
       v.mode === 'create'
-        ? apiData<{ id: string; label: string }>('/api/custom-providers', {
-            method: 'POST',
-            headers: json,
-            body: JSON.stringify(v.body),
-          })
+        ? createCustomProvider(v.body)
         : apiData<{ id: string }>(`/api/custom-providers/${v.id}`, {
             method: 'PATCH',
             headers: json,

@@ -124,7 +124,12 @@ export const copy = {
     ownOnly: 'Your own usage (this server has no org view).',
     notVisible: 'No harness usage is visible to you.',
     none: 'No coding harnesses connected.',
+    noneYet: 'No coding harnesses yet',
     connect: 'Connect one',
+    connected: (n: number) => `${n} coding harness${n === 1 ? '' : 'es'} connected`,
+    lineCost: (cost: string, days: number) =>
+      `${cost} est. cost (API list price), last ${days} days`,
+    open: 'Open Harnesses',
     unpriced: 'unpriced',
     costNote: (days: number) => `Est. cost (API list price), last ${days} days`,
   },
@@ -156,6 +161,16 @@ export const copy = {
     link: 'Agents',
     after: 'Once it is running, cost, health and sessions show up here.',
     headline: 'Deploy your first agent to see cost, health and sessions here.',
+    cli: (n: number) => `Or use the CLI (${n} commands)`,
+  },
+  /** The first run's preview of the cards a deploy brings: what each will show, never a number. */
+  preview: {
+    title: 'After your first deploy',
+    needs: 'Agents that need action, requests waiting for you and failed sessions, worst first.',
+    spend:
+      "Fleet spend for the range against the previous one, by agent, with this month's forecast.",
+    health:
+      'Every agent rated Healthy, Watch or Needs action on reliability, cost, activity and latency.',
   },
   spend: {
     title: 'Spend',

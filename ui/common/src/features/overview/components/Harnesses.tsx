@@ -9,9 +9,11 @@ import { SquareTerminal } from 'lucide-react'
 import type { CSSProperties } from 'react'
 import { KpiTile } from '@/components/shared/kpi-tile'
 import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { HARNESSES } from '@/features/harnesses/constants'
 import { fmtMoney, fmtPct } from '@/lib/format'
+import { cn } from '@/lib/utils'
 import type { HarnessSummary } from '../api'
 import { copy } from '../copy'
 import { SourceFailed, TOUCH } from './Card'
@@ -20,9 +22,95 @@ import { TILE, TileLabel } from './Kpis'
 const known = new Map<string, { name: string; color: string }>(HARNESSES.map((h) => [h.id, h]))
 const colorOf = (id: string) => known.get(id)?.color ?? 'var(--chart-other)'
 
-export function Harnesses({ data, days }: { data: HarnessSummary; days: number }) {
+function pricedOf(data: HarnessSummary) {
   const priced = data.harnesses.filter((h) => !h.unpriced && (h.cost ?? 0) > 0)
-  const total = priced.reduce((n, h) => n + (h.cost ?? 0), 0)
+  return { priced, total: priced.reduce((n, h) => n + (h.cost ?? 0), 0) }
+}
+
+const Dot = () => (
+  <span aria-hidden className="text-muted-foreground">
+    ·
+  </span>
+)
+
+/**
+ * The first run's Harnesses: one line instead of the KPI tile, so an empty fleet has no loud zero over empty space. The
+ * same summary and states as the tile; with harnesses connected (agents aren't needed for them) it keeps the count and
+ * the est. cost.
+ */
+export function HarnessesLine({
+  data,
+  days,
+  className,
+}: {
+  data: HarnessSummary
+  days: number
+  className?: string
+}) {
+  const { total } = pricedOf(data)
+  const link = (label: string) => (
+    // Underlined: inside a sentence a link can't be told from the text by colour (WCAG 1.4.1).
+    <Button
+      asChild
+      variant="link"
+      size="sm"
+      className={`h-6 px-0 text-sm underline underline-offset-4 ${TOUCH}`}
+    >
+      <Link to="/harnesses" search={{} as never}>
+        {label}
+      </Link>
+    </Button>
+  )
+  return (
+    <Card
+      asChild
+      className={cn(
+        'flex-row flex-wrap items-center gap-x-2 gap-y-1 px-4 py-2.5 text-sm',
+        className,
+      )}
+    >
+      <section aria-label={copy.harnesses.title} data-testid="overview-harnesses">
+        {/* A failed read brings its own warning icon. */}
+        {data.error ? null : (
+          <SquareTerminal aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+        )}
+        {data.isPending ? (
+          <Skeleton className="h-4 w-56 motion-reduce:animate-none" />
+        ) : data.error ? (
+          <SourceFailed what={copy.harnesses.what} onRetry={data.retry} />
+        ) : data.notVisible ? (
+          <span className="text-muted-foreground">{copy.harnesses.notVisible}</span>
+        ) : !data.connected ? (
+          <>
+            <span>{copy.harnesses.noneYet}</span>
+            <Dot />
+            <span>{link(copy.harnesses.connect)}.</span>
+          </>
+        ) : (
+          <>
+            <span className="tabular-nums">{copy.harnesses.connected(data.connected)}</span>
+            {data.ownOnly ? (
+              <span className="text-muted-foreground">({copy.kpi.yourUsage})</span>
+            ) : null}
+            {total > 0 ? (
+              <>
+                <Dot />
+                <span className="text-muted-foreground tabular-nums">
+                  {copy.harnesses.lineCost(fmtMoney(total), days)}
+                </span>
+              </>
+            ) : null}
+            <Dot />
+            {link(copy.harnesses.open)}
+          </>
+        )}
+      </section>
+    </Card>
+  )
+}
+
+export function Harnesses({ data, days }: { data: HarnessSummary; days: number }) {
+  const { priced, total } = pricedOf(data)
   const share = (h: HarnessSummary['harnesses'][number]) =>
     total > 0 && !h.unpriced ? ((h.cost ?? 0) / total) * 100 : null
   return (

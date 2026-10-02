@@ -27,7 +27,7 @@ export const copy = {
     welcome: { title: 'Welcome', sub: 'How OpenRuntime works' },
     role: { title: 'Your role', sub: 'Tailor the guide' },
     model: { title: 'Connect a model', sub: 'Provider and keys' },
-    agent: { title: 'Bring an agent', sub: 'Zip, GitHub or registry' },
+    agent: { title: 'Deploy an agent', sub: 'Zip, GitHub or registry' },
     ready: { title: 'Ready', sub: 'Start exploring' },
   } satisfies Record<StepId, { title: string; sub: string }>,
   welcome: {
@@ -102,7 +102,7 @@ export const copy = {
     saveFailed: (reason: string) => `Couldn't connect: ${reason}`,
   },
   agent: {
-    title: 'Bring your first agent',
+    title: 'Deploy your first agent',
     intro: 'Every agent goes through the same lifecycle, whichever way it arrives.',
     upload: 'Upload a zip',
     github: 'GitHub',
@@ -131,6 +131,7 @@ export const copy = {
   card: {
     title: 'Setup guide',
     intro: 'Finish setting up your workspace. Every step is optional.',
+    start: 'Start guide',
     resume: 'Resume guide',
     done: 'Done',
     todo: 'Not yet',

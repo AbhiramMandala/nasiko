@@ -18,6 +18,7 @@ import type {
   CreateConfigBody,
   CreateCustomProviderBody,
   CustomProvider,
+  ProviderKind,
   LlmConfig,
   ModelMapping,
   RoutingConfig,
@@ -199,6 +200,8 @@ export function buildRouterState(
         label: 'custom',
         display_name: 'Custom',
         base_url: 'http://localhost:11434/v1',
+        kind: 'openai',
+        api_version: null,
         default_model: 'custom-local',
         catalog_sync_enabled: true,
         api_key_set: true,
@@ -530,9 +533,36 @@ function slugify(name: string): string {
     .replace(/^-+|-+$/g, '')
 }
 
+/** `custom_providers.rs` `validate_dialect`: `kind` defaults to openai; Azure needs an api-version. */
+export function validateDialect(kind: string | undefined, apiVersion: string | undefined) {
+  const k = (kind ?? 'openai').trim()
+  const v = apiVersion?.trim() || null
+  if (k === 'openai' || k === 'bedrock-converse')
+    return { kind: k as ProviderKind, api_version: null }
+  if (k === 'azure-openai') {
+    if (!v)
+      throw new MockHttpError(
+        400,
+        "api_version is required for kind 'azure-openai' (e.g. 2024-10-21)",
+      )
+    return { kind: k as ProviderKind, api_version: v }
+  }
+  throw new MockHttpError(
+    400,
+    `unknown kind '${k}' (expected 'openai', 'azure-openai', or 'bedrock-converse')`,
+  )
+}
+
+/** `dialect.rs` `normalize_base`: Azure accepts the portal's `…/openai` form too. */
+const normalizeBase = (kind: string, base: string) => {
+  const b = base.trim().replace(/\/+$/, '')
+  return kind === 'azure-openai' ? b.replace(/\/openai$/, '').replace(/\/+$/, '') : b
+}
+
 export function createCustom(s: RouterState, body: CreateCustomProviderBody, now: number) {
+  const dialect = validateDialect(body.kind, body.api_version)
   const display = body.display_name?.trim()
-  const base = body.base_url?.trim().replace(/\/+$/, '')
+  const base = normalizeBase(dialect.kind, body.base_url ?? '')
   if (!display || !base) throw new MockHttpError(400, 'display_name and base_url are required')
   if (!body.api_key?.trim()) throw new MockHttpError(400, 'api_key is required')
   let label = slugify(display)
@@ -545,7 +575,10 @@ export function createCustom(s: RouterState, body: CreateCustomProviderBody, now
     label: candidate,
     display_name: display,
     base_url: base,
-    default_model: body.default_model ?? null,
+    kind: dialect.kind,
+    api_version: dialect.api_version,
+    // `CreateRequest` has no default_model (4d57453c): serde drops it, so the mock does too.
+    default_model: null,
     catalog_sync_enabled: body.catalog_sync_enabled,
     api_key_set: true,
     last_sync_at: null,
@@ -563,7 +596,12 @@ export function updateCustom(s: RouterState, id: string, body: UpdateCustomProvi
   const p = s.custom.find((x) => x.id === id && !x.deleted)
   if (!p) throw new MockHttpError(404, 'no such custom provider')
   if (body.display_name) p.display_name = body.display_name
-  if (body.base_url) p.base_url = body.base_url.replace(/\/+$/, '')
+  const kind = p.kind ?? 'openai'
+  const version = body.api_version?.trim()
+  if (kind === 'azure-openai' && body.api_version !== undefined && !version)
+    throw new MockHttpError(400, "api_version cannot be cleared for kind 'azure-openai'")
+  if (body.base_url) p.base_url = normalizeBase(kind, body.base_url)
+  if (kind === 'azure-openai' && version) p.api_version = version
   if (body.api_key) p.api_key_set = true
   if (body.default_model) p.default_model = body.default_model
   if (body.catalog_sync_enabled !== undefined) p.catalog_sync_enabled = body.catalog_sync_enabled

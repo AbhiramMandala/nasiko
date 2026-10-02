@@ -20,7 +20,7 @@ import type {
   Spend as SpendData,
 } from './api'
 import { Budget } from './components/Budget'
-import { Harnesses } from './components/Harnesses'
+import { Harnesses, HarnessesLine } from './components/Harnesses'
 import { Headline } from './components/Headline'
 import { NeedsYou } from './components/NeedsYou'
 import { MonthBar } from './components/MonthBar'
@@ -454,5 +454,32 @@ describe('Harnesses', () => {
     expect(tile).toHaveTextContent('100.0%$12.00')
     const rows = screen.getAllByRole('listitem')
     expect(rows[1]).toHaveTextContent(`mystery${copy.harnesses.unpriced}`)
+  })
+  it('keeps the first run line to one sentence per state, with only priced cost', async () => {
+    const { unmount } = renderInRouter(<HarnessesLine data={data({})} days={30} />)
+    const line = await screen.findByTestId('overview-harnesses')
+    expect(line).toHaveTextContent(`${copy.harnesses.noneYet}·${copy.harnesses.connect}.`)
+    unmount()
+    const second = renderInRouter(
+      <HarnessesLine
+        data={data({
+          connected: 2,
+          ownOnly: true,
+          harnesses: [
+            { id: 'claude-code', cost: 12, unpriced: false },
+            { id: 'mystery', cost: 3, unpriced: true },
+          ],
+        })}
+        days={30}
+      />,
+    )
+    expect(await screen.findByTestId('overview-harnesses')).toHaveTextContent(
+      `${copy.harnesses.connected(2)}(${copy.kpi.yourUsage})·${copy.harnesses.lineCost('$12.00', 30)}·${copy.harnesses.open}`,
+    )
+    second.unmount()
+    const retry = vi.fn()
+    renderInRouter(<HarnessesLine data={data({ error: new Error('x'), retry })} days={30} />)
+    await userEvent.click(await screen.findByRole('button', { name: copy.retry }))
+    expect(retry).toHaveBeenCalled()
   })
 })

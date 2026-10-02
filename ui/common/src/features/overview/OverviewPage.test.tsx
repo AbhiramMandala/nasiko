@@ -12,6 +12,7 @@ import { configureChatMock } from '@/mocks/chatStore'
 import { now, seed, setupPinnedSeed } from '@/test/pinnedSeed'
 import { renderApp } from '@/test/renderApp'
 import { recordRequests, server } from '@/test/setup'
+import { copy as deployCopy } from '@/features/deploy/copy'
 import { copy } from './copy'
 
 setupPinnedSeed()
@@ -193,11 +194,58 @@ describe('first run (design 7A)', () => {
     renderApp('/')
     const guideCard = await screen.findByTestId('overview-setup-guide')
     expect(document.querySelector('[data-testid="overview-first-run"]')).toBeNull()
-    // The seed user picked a role and has router configs, but no agents yet: the guide resumes at Bring an agent.
+    // One next action: Deploy beside the headline; the header's Setup guide and Quick actions' Deploy step aside.
+    expect(screen.getAllByRole('link', { name: deployCopy.entry.label })).toHaveLength(1)
+    expect(screen.queryByRole('button', { name: copy.setup.button })).toBeNull()
+    expect(within(card('overview-actions')).queryByRole('button', { name: /Copy/ })).toBeNull()
+    // The seed user picked a role and has router configs, but no agents yet: the guide resumes at Deploy an agent.
     await user.click(within(guideCard).getByRole('button', { name: 'Resume guide' }))
     expect(
-      await screen.findByRole('heading', { name: 'Bring your first agent' }),
+      await screen.findByRole('heading', { name: 'Deploy your first agent' }),
     ).toBeInTheDocument()
+  })
+
+  it('opens the CLI path with every command, and each guide row at its own step', async () => {
+    server.use(http.get('*/api/agents', () => HttpResponse.json([])))
+    const user = userEvent.setup()
+    renderApp('/')
+    const guideCard = await screen.findByTestId('overview-setup-guide')
+    // The deploy command alone fails before `nasiko connect` and `nasiko new`, so the CLI shows all three.
+    await user.click(screen.getByRole('button', { name: copy.firstRun.cli(3) }))
+    expect(await screen.findByText(/^nasiko connect /)).toBeInTheDocument()
+    expect(screen.getByText('nasiko deploy ./my-agent')).toBeInTheDocument()
+    await user.click(within(guideCard).getByRole('button', { name: /^Connect a model/ }))
+    expect(
+      await screen.findByRole('heading', { name: 'Connect a model provider' }),
+    ).toBeInTheDocument()
+  })
+
+  it('says Start guide until a step is done', async () => {
+    server.use(http.get('*/api/agents', () => HttpResponse.json([])))
+    configureMocks({ onboarding: { persona: null, completed: true } })
+    server.use(http.get('*/api/llm-configs', () => HttpResponse.json({ data: [] })))
+    renderApp('/')
+    const guideCard = await screen.findByTestId('overview-setup-guide')
+    expect(
+      await within(guideCard).findByRole('button', { name: 'Start guide' }),
+    ).toBeInTheDocument()
+  })
+
+  it('previews the lead cards without numbers and keeps Harnesses to one line', async () => {
+    server.use(http.get('*/api/agents', () => HttpResponse.json([])))
+    renderApp('/')
+    const preview = await screen.findByTestId('overview-preview')
+    expect(
+      within(preview)
+        .getAllByRole('heading', { level: 3 })
+        .map((h) => h.textContent),
+    ).toEqual([copy.needs.title, copy.spend.title, copy.health.title])
+    // Honest numbers: nothing has run, so the preview states none.
+    expect(preview.textContent).not.toMatch(/\d/)
+    const line = card('overview-harnesses')
+    await within(line).findByText(/coding harness/)
+    expect(within(line).getByRole('link')).toHaveAttribute('href', '/harnesses')
+    expect(within(line).queryByText(copy.kpi.connected)).toBeNull()
   })
 
   it('opens the guide from the header Setup guide', async () => {

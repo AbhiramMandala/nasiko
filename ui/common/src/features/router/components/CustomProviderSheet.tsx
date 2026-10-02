@@ -1,7 +1,8 @@
 /**
  * Add or edit a custom provider (plan §4.6, superuser). Test posts the typed base URL and key (the server's test
  * endpoint takes them, not a provider id), so testing a saved provider needs its key typed again. The key is
- * write-only; the base URL must be http(s); test output renders as text only (eng #12).
+ * write-only; the base URL must be http(s); test output renders as text only (eng #12). The endpoint type (`kind`) is
+ * chosen on a create only: the server can't change it later. Azure also needs its `api-version`.
  */
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useEffect, useId, useState } from 'react'
@@ -9,8 +10,15 @@ import { Controller, useForm, useWatch } from 'react-hook-form'
 import { z } from 'zod'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
-import { Field, FieldLabel } from '@/components/ui/field'
+import { Field, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import {
   Sheet,
   SheetContent,
@@ -26,23 +34,32 @@ import { useSaveCustomProvider, useTestCustomProvider } from '../api'
 import { copy } from '../copy'
 import { routerError } from '../errors'
 import { fieldErrors } from '../form'
-import type { CustomProvider, TestCustomProviderResult } from '../types'
+import type { CustomProvider, ProviderKind, TestCustomProviderResult } from '../types'
 import { LeaveGuard } from '@/components/shared/leave-guard'
 import { Warn } from './bits'
 
 export type CustomMode = { kind: 'create' } | { kind: 'edit'; provider: CustomProvider }
+
+const KINDS = ['openai', 'azure-openai', 'bedrock-converse'] as const satisfies ProviderKind[]
+const URL_PLACEHOLDER: Record<ProviderKind, string> = {
+  openai: 'https://llm.example.com/v1',
+  'azure-openai': 'https://my-resource.openai.azure.com',
+  'bedrock-converse': 'https://bedrock-runtime.us-west-2.amazonaws.com',
+}
 
 const origin = (v: string) => safeHttpUrl(v.trim()) && new URL(v.trim()).origin
 
 /**
  * The provider form, for a create or for an edit of `src`. The key is required on a create, and on an edit that moves
  * the base URL to a new host: the server keeps the stored key on a PATCH without one (COALESCE), so the new host would
- * receive it unseen. A default model once set can't be cleared (COALESCE again).
+ * receive it unseen. A default model once set can't be cleared (COALESCE again), nor can an Azure api-version.
  */
 const schemaFor = (src: CustomProvider | null) =>
   z
     .object({
       name: z.string().refine((v) => !!v.trim(), copy.required),
+      kind: z.enum(KINDS),
+      apiVersion: z.string(),
       baseUrl: z
         .string()
         .refine((v) => !!v.trim(), copy.required)
@@ -54,6 +71,8 @@ const schemaFor = (src: CustomProvider | null) =>
     .superRefine((f, ctx) => {
       if (!f.key && (!src || hostChanged(src, f.baseUrl)))
         ctx.addIssue({ code: 'custom', path: ['key'], message: copy.required })
+      if (f.kind === 'azure-openai' && !f.apiVersion.trim())
+        ctx.addIssue({ code: 'custom', path: ['apiVersion'], message: copy.required })
     })
 type Form = z.infer<ReturnType<typeof schemaFor>>
 
@@ -111,6 +130,8 @@ function Body({ mode, onClose }: { mode: CustomMode; onClose: () => void }) {
   } = useForm<Form>({
     defaultValues: {
       name: src?.display_name ?? '',
+      kind: src?.kind ?? 'openai',
+      apiVersion: src?.api_version ?? '',
       baseUrl: src?.base_url ?? '',
       key: '',
       defaultModel: src?.default_model ?? '',
@@ -118,9 +139,14 @@ function Body({ mode, onClose }: { mode: CustomMode; onClose: () => void }) {
     },
     resolver: zodResolver(schema),
   })
-  const { name, baseUrl, key, defaultModel, sync } = useWatch({ control }) as Form
+  const { name, kind, apiVersion, baseUrl, key, defaultModel, sync } = useWatch({
+    control,
+  }) as Form
   const [saveError, setSaveError] = useState<unknown>(null)
-  const errs = fieldErrors(schema, { name, baseUrl, key, defaultModel, sync })
+  const errs = fieldErrors(schema, { name, kind, apiVersion, baseUrl, key, defaultModel, sync })
+  const azure = kind === 'azure-openai'
+  // Sent only for Azure: the server ignores it elsewhere, and keeps its column null there.
+  const version = azure ? { api_version: apiVersion.trim() } : {}
   const urlBad = !!baseUrl && !safeHttpUrl(baseUrl.trim())
   const modelBlocked = !!errs.defaultModel
   const newHost = !!src && hostChanged(src, baseUrl)
@@ -145,6 +171,8 @@ function Body({ mode, onClose }: { mode: CustomMode; onClose: () => void }) {
             body: {
               display_name: name.trim(),
               base_url: baseUrl.trim(),
+              kind,
+              ...version,
               api_key: key,
               default_model: defaultModel.trim() || null,
               catalog_sync_enabled: sync,
@@ -156,6 +184,7 @@ function Body({ mode, onClose }: { mode: CustomMode; onClose: () => void }) {
             body: {
               display_name: name.trim(),
               base_url: baseUrl.trim(),
+              ...version,
               ...(key ? { api_key: key } : {}),
               ...(defaultModel.trim() ? { default_model: defaultModel.trim() } : {}),
               catalog_sync_enabled: sync,
@@ -164,9 +193,13 @@ function Body({ mode, onClose }: { mode: CustomMode; onClose: () => void }) {
     setSaveError(null)
     save.mutate(body, {
       onError: (e) => setSaveError(e),
-      onSuccess: () => {
+      onSuccess: (out) => {
         setValue('key', '')
-        announce(copy.saved(name.trim()))
+        announce(
+          out && 'defaultModelSet' in out && !out.defaultModelSet
+            ? copy.cpSavedNoModel(name.trim())
+            : copy.saved(name.trim()),
+        )
         onClose()
       },
       onSettled: () => save.reset(),
@@ -197,20 +230,56 @@ function Body({ mode, onClose }: { mode: CustomMode; onClose: () => void }) {
             <Input id={`${ids}-n`} {...register('name')} maxLength={100} />
           </Field>
           <Field className="gap-1">
+            <FieldLabel htmlFor={`${ids}-t`}>{copy.cpKind}</FieldLabel>
+            <Select
+              value={kind}
+              disabled={!!src}
+              onValueChange={(v) => setValue('kind', v as ProviderKind, { shouldDirty: true })}
+            >
+              <SelectTrigger id={`${ids}-t`} className="w-full pointer-coarse:min-h-11">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {KINDS.map((k) => (
+                  <SelectItem key={k} value={k}>
+                    {copy.cpKinds[k]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <FieldDescription className="text-xs">
+              {src ? copy.cpKindLocked : copy.cpKindHint[kind]}
+            </FieldDescription>
+          </Field>
+          <Field className="gap-1">
             <FieldLabel htmlFor={`${ids}-u`}>{copy.cpBaseUrl}</FieldLabel>
             <Input
               id={`${ids}-u`}
               {...register('baseUrl')}
               inputMode="url"
-              placeholder="https://llm.example.com/v1"
+              placeholder={URL_PLACEHOLDER[kind]}
               aria-invalid={urlBad}
             />
             {urlBad ? (
               <p role="alert" className="text-xs text-destructive">
                 {copy.cpBaseUrlBad}
               </p>
-            ) : null}
+            ) : (
+              <FieldDescription className="text-xs">{copy.cpBaseUrlHint[kind]}</FieldDescription>
+            )}
           </Field>
+          {azure ? (
+            <Field className="gap-1">
+              <FieldLabel htmlFor={`${ids}-v`}>{copy.cpApiVersion}</FieldLabel>
+              <Input
+                id={`${ids}-v`}
+                {...register('apiVersion')}
+                placeholder="2024-10-21"
+                spellCheck={false}
+              />
+              {src?.api_version && !apiVersion.trim() ? <Warn>{copy.cantClear}</Warn> : null}
+            </Field>
+          ) : null}
           <Field className="gap-1">
             <FieldLabel htmlFor={`${ids}-k`}>{copy.cpKey}</FieldLabel>
             <Input
@@ -257,10 +326,16 @@ function Body({ mode, onClose }: { mode: CustomMode; onClose: () => void }) {
               type="button"
               size="sm"
               variant="outline"
-              disabled={!key || !baseUrl.trim() || urlBad || test.isPending}
+              disabled={!key || !baseUrl.trim() || urlBad || !!errs.apiVersion || test.isPending}
               onClick={() =>
                 test.mutate(
-                  { base_url: baseUrl.trim(), api_key: key, model: defaultModel.trim() || null },
+                  {
+                    base_url: baseUrl.trim(),
+                    api_key: key,
+                    kind,
+                    ...version,
+                    model: defaultModel.trim() || null,
+                  },
                   {
                     onSuccess: (r) => announce(testText(r)),
                     onError: (e) => announce(routerError(e).problem),

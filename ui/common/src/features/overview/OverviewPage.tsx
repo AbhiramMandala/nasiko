@@ -33,9 +33,9 @@ import { useReturnTick } from '@/lib/useReturnTick'
 import { useFleetHealth, useHarnessSummary, useNeedsYou, useSpend } from './api'
 // Budgets hidden: no server support for /api/budgets yet (R-L10). Restore when it lands.
 // import { Budget } from './components/Budget'
-import { FirstRun } from './components/FirstRun'
+import { FirstRun, FirstRunLead, FirstRunPreview } from './components/FirstRun'
 import { FleetHealth } from './components/FleetHealth'
-import { Harnesses } from './components/Harnesses'
+import { Harnesses, HarnessesLine } from './components/Harnesses'
 import { Headline } from './components/Headline'
 import { AgentsTile, RunsTile, SpendTile } from './components/Kpis'
 import { MonthBar } from './components/MonthBar'
@@ -68,7 +68,16 @@ function Frame({
   )
 }
 
-function HeaderActions({ search, setSearch }: { search: OverviewSearch; setSearch: SetSearch }) {
+function HeaderActions({
+  search,
+  setSearch,
+  setup,
+}: {
+  search: OverviewSearch
+  setSearch: SetSearch
+  /** False on first run: the Setup guide (or deploy) card is on the page already. */
+  setup: boolean
+}) {
   return (
     <>
       <ToggleGroup
@@ -93,10 +102,13 @@ function HeaderActions({ search, setSearch }: { search: OverviewSearch; setSearc
           </ToggleGroupItem>
         ))}
       </ToggleGroup>
-      <SetupGuide />
+      {setup ? <SetupGuide /> : null}
     </>
   )
 }
+
+/** A first-run row that spans the grid at every width. */
+const FULL_ROW = '@[700px]/overview:col-span-2 @[1100px]/overview:col-span-3'
 
 /**
  * Where each card sits from 1100 px (4 columns) and from 700 px (2), with and without budgets. Literal class names, so
@@ -233,7 +245,7 @@ function Overview({
   const grid =
     'grid grid-cols-1 items-stretch gap-3 @[700px]/overview:grid-cols-2 @[1100px]/overview:grid-cols-3'
   const description = copy.greeting(now.getHours(), me.username, days)
-  const actions = <HeaderActions search={search} setSearch={setSearch} />
+  const actions = <HeaderActions search={search} setSearch={setSearch} setup={!firstRun} />
   // One page loader until the first paint's reads settle (data or error: a failed read renders its card's error), in
   // place of every card's skeleton. Latched: a later range change or return tick keeps the cards' own loading states.
   // Needs you's rating and session checks aren't waited for: its card shows them loading (a fan-out can be slow).
@@ -257,13 +269,16 @@ function Overview({
   if (firstRun) {
     return (
       <Frame description={description} actions={actions}>
-        <p className="max-w-3xl text-lg text-pretty" data-testid="overview-headline">
-          {copy.firstRun.headline}
-        </p>
+        <FirstRunLead />
         <div className={grid}>
+          {/* From 1100 px Quick actions and Harnesses' one line stack beside the first-run card, so neither stretches
+              to its height; below that each spans the grid. The preview of later cards sits apart, after a wider gap. */}
           <FirstRun />
-          <QuickActions />
-          <Harnesses data={harnesses} days={days} />
+          <div className="contents @[1100px]/overview:flex @[1100px]/overview:flex-col @[1100px]/overview:gap-3">
+            <QuickActions firstRun className={`${FULL_ROW} @[1100px]/overview:flex-1`} />
+            <HarnessesLine data={harnesses} days={days} className={FULL_ROW} />
+          </div>
+          <FirstRunPreview className={`${FULL_ROW} mt-3`} />
         </div>
       </Frame>
     )

@@ -117,7 +117,7 @@ describe('first-run guide', () => {
     await user.click(screen.getByRole('radio', { name: /developer/i }))
     await user.click(screen.getByRole('button', { name: /continue/i }))
     await user.click(await screen.findByRole('button', { name: 'Skip this step' }))
-    await screen.findByRole('heading', { name: 'Bring your first agent' })
+    await screen.findByRole('heading', { name: 'Deploy your first agent' })
     await user.click(screen.getByRole('tab', { name: 'Registry' }))
     await user.type(
       await screen.findByRole('textbox', { name: deployCopy.registry.reference }),

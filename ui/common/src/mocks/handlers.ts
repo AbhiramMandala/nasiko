@@ -72,6 +72,7 @@ import {
   buildRouterState,
   createConfig,
   createCustom,
+  validateDialect,
   deleteConfig,
   deleteCustom,
   listConfigs,
@@ -1512,9 +1513,12 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
       const body = (await request.json().catch(() => ({}))) as {
         base_url?: string
         api_key?: string
+        kind?: string
+        api_version?: string
         model?: string
       }
       return routed(() => {
+        validateDialect(body.kind, body.api_version)
         if (!body.base_url?.trim() || !body.api_key?.trim())
           throw new MockHttpError(400, 'base_url and api_key are required')
         if (hasVariant('router-custom-down'))

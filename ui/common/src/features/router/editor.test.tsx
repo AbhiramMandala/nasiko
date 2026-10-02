@@ -242,12 +242,58 @@ describe('custom providers', () => {
     await waitFor(() => expect(sheet).not.toBeInTheDocument())
     await rec.flush()
     expect(rec.requests.find((r) => r.url.pathname === '/api/custom-providers/test')!.body).toEqual(
-      { base_url: 'http://localhost:8000/v1', api_key: KEY, model: 'custom-large' },
+      { base_url: 'http://localhost:8000/v1', api_key: KEY, kind: 'openai', model: 'custom-large' },
     )
+    const create = rec.requests.find(
+      (r) => r.method === 'POST' && r.url.pathname === '/api/custom-providers',
+    )!.body
+    expect(create).toMatchObject({
+      display_name: 'Local vLLM',
+      base_url: 'http://localhost:8000/v1',
+      kind: 'openai',
+    })
+    expect(create).not.toHaveProperty('api_version')
+    // The server's create drops default_model, so a PATCH sets it.
+    expect(rec.requests.find((r) => r.method === 'PATCH')!.body).toEqual({
+      default_model: 'custom-large',
+    })
+  })
+
+  it('an Azure endpoint needs its API version, and the type is locked on edit', async () => {
+    const rec = recordRequestBodies()
+    renderApp('/router')
+    await ready()
+    await showTab(copy.anchors.providers)
+    await userEvent.click(within(providers()).getByRole('button', { name: copy.addCustom }))
+    const sheet = await screen.findByRole('dialog', { name: copy.cpNew })
+    expect(within(sheet).queryByLabelText(copy.cpApiVersion)).toBeNull()
+    await userEvent.click(within(sheet).getByLabelText(copy.cpKind))
+    await userEvent.click(await screen.findByRole('option', { name: copy.cpKinds['azure-openai'] }))
+    await userEvent.type(within(sheet).getByLabelText(copy.cpName), 'Azure prod')
+    await userEvent.type(
+      within(sheet).getByLabelText(copy.cpBaseUrl),
+      'https://prod.openai.azure.com/openai',
+    )
+    await userEvent.type(within(sheet).getByLabelText(copy.cpKey), KEY)
+    expect(within(sheet).getByRole('button', { name: copy.save })).toBeDisabled()
+    expect(within(sheet).getByRole('button', { name: copy.cpTest })).toBeDisabled()
+    await userEvent.type(within(sheet).getByLabelText(copy.cpApiVersion), '2024-10-21')
+    await userEvent.click(within(sheet).getByRole('button', { name: copy.save }))
+    await waitFor(() => expect(sheet).not.toBeInTheDocument())
+    await rec.flush()
     expect(
       rec.requests.find((r) => r.method === 'POST' && r.url.pathname === '/api/custom-providers')!
         .body,
-    ).toMatchObject({ display_name: 'Local vLLM', base_url: 'http://localhost:8000/v1' })
+    ).toMatchObject({ kind: 'azure-openai', api_version: '2024-10-21' })
+
+    await userEvent.click(
+      within(providers()).getByRole('button', { name: copy.configActions('Azure prod') }),
+    )
+    await userEvent.click(await screen.findByRole('menuitem', { name: copy.edit }))
+    const edit = await screen.findByRole('dialog', { name: copy.cpEdit('Azure prod') })
+    expect(within(edit).getByLabelText(copy.cpKind)).toBeDisabled()
+    expect(within(edit).getByLabelText(copy.cpBaseUrl)).toHaveValue('https://prod.openai.azure.com')
+    expect(within(edit).getByLabelText(copy.cpApiVersion)).toHaveValue('2024-10-21')
   })
 
   it('a failing test shows the provider’s error as text', async () => {

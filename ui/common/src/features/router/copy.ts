@@ -369,15 +369,36 @@ export const copy = {
 
   // Custom provider sheet
   cpNew: 'Add custom provider',
-  cpDescription: 'An OpenAI-compatible endpoint the router can call, for every user’s configs.',
+  cpDescription: 'An endpoint the router can call, for every user’s configs.',
   cpEdit: (name: string) => `Edit ${name}`,
   cpName: 'Name',
+  cpKind: 'Endpoint type',
+  cpKinds: {
+    openai: 'OpenAI-compatible',
+    'azure-openai': 'Azure OpenAI',
+    'bedrock-converse': 'AWS Bedrock',
+  },
+  cpKindHint: {
+    openai: 'Speaks the OpenAI chat completions format.',
+    'azure-openai':
+      'An Azure OpenAI resource. OpenRuntime adds the deployment path and api-version.',
+    'bedrock-converse': 'Bedrock Runtime’s Converse API, with a Bedrock API key.',
+  },
+  cpKindLocked: 'The endpoint type can’t change after registering. Add a new provider instead.',
   cpBaseUrl: 'Base URL',
+  cpBaseUrlHint: {
+    openai: 'The part before /chat/completions.',
+    'azure-openai': 'The resource host only, e.g. https://<resource>.openai.azure.com.',
+    'bedrock-converse': 'The region’s Bedrock Runtime endpoint.',
+  },
+  cpApiVersion: 'API version',
   cpBaseUrlBad: 'Use an http:// or https:// URL.',
   cpKey: 'API key',
   cpKeyKeep: 'Leave empty to keep the saved key.',
   cpKeyNewHost: 'New host: enter the key again. The saved key isn’t sent to a different host.',
   cpDefaultModel: 'Default model',
+  cpSavedNoModel: (name: string) =>
+    `Saved ${name}, but its default model wasn’t set. Edit the provider to set it.`,
   cpSync: 'Sync the model catalog',
   cpTest: 'Test',
   cpTesting: 'Testing…',

@@ -3,7 +3,8 @@
  * - Configs: `server/src/llm_configs.rs` `CONFIG_JSON` (the OpenAPI response is an untyped McpEnvelope).
  * - Agent routing: `server/src/agents/llm_config.rs` `LlmConfigResponse` / `AttachLlmConfigRequest`.
  * - Custom providers: `server/src/llm_router/custom_providers.rs` `ProviderView`, `CreateRequest`, `UpdateRequest`,
- *   `TestRequest` (not in OpenAPI, so typed by hand).
+ *   `TestRequest` (not in OpenAPI, so typed by hand); `kind`/`api_version` from @ 4d57453c (`llm-router` `dialect.rs`
+ *   `KIND_*`). Older servers send no `kind`: read it as `openai`.
  * - Model registry: `server/src/llm_router/model_registry.rs` `ModelMapping`.
  * - Secrets: `server/src/secrets/routes.rs` `SecretEntry` (names only, never values).
  */
@@ -66,11 +67,17 @@ export interface SecretEntry {
   updated_at: string
 }
 
+/** The wire dialect a custom provider speaks (`dialect.rs` `KIND_*`). Immutable once registered. */
+export type ProviderKind = 'openai' | 'azure-openai' | 'bedrock-converse'
+
 export interface CustomProvider {
   id: string
   label: string
   display_name: string
   base_url: string
+  kind?: ProviderKind
+  /** Azure `api-version`; null for every other kind. */
+  api_version?: string | null
   default_model: string | null
   catalog_sync_enabled: boolean
   api_key_set: boolean
@@ -83,18 +90,24 @@ export interface CustomProvider {
 export interface CreateCustomProviderBody {
   display_name: string
   base_url: string
+  kind: ProviderKind
+  /** Required for `azure-openai`, ignored otherwise. */
+  api_version?: string
   api_key: string
   default_model?: string | null
   catalog_sync_enabled: boolean
 }
 
+/** `kind` can't change on a PATCH (the server ignores it). */
 export type UpdateCustomProviderBody = Partial<
-  Omit<CreateCustomProviderBody, 'catalog_sync_enabled'>
+  Omit<CreateCustomProviderBody, 'catalog_sync_enabled' | 'kind'>
 > & { catalog_sync_enabled?: boolean }
 
 export interface TestCustomProviderBody {
   base_url: string
   api_key: string
+  kind: ProviderKind
+  api_version?: string
   model?: string | null
 }
 
