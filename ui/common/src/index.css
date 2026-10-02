@@ -1,4 +1,4 @@
-/* Sources are explicit: an edition builds from its own root (oss/src, ee/web/src), so automatic detection would miss
+/* Sources are explicit: an edition builds from its own `src/` root, so automatic detection would miss
    the core. The core scans common/; an edition layer adds its own `@source` in its stylesheet. */
 @import "tailwindcss" source(none);
 @source "../";
