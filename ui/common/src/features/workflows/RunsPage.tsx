@@ -3,13 +3,12 @@
  * still moving. A card is collapsible: a moving run opens by default, and the user's own toggle wins. On `main` the
  * list carries no `hitl` (W-4), so an opened paused run reads its own detail for the request card.
  */
-import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { ChevronDown, Info, Loader2, RotateCw, SearchX, Workflow } from 'lucide-react'
-import { useDeferredValue, useEffect, useState } from 'react'
+import { ChevronDown, Info, RotateCw } from 'lucide-react'
+import { useDeferredValue, useState } from 'react'
 import { toast } from 'sonner'
 import { PageHeader } from '@/components/shared/page-header'
-import { PageLoader } from '@/components/shared/page-loader'
 import { SearchInput } from '@/components/shared/search-input'
 import { EmptyState, StateCard } from '@/components/shared/state-card'
 import { Badge } from '@/components/ui/badge'
@@ -22,6 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Skeleton } from '@/components/ui/skeleton'
 import { relTime } from '@/features/agents/format'
 import { fmtDuration, fmtLongDay, fmtTokens } from '@/lib/format'
 import { useNow } from '@/lib/useNow'
@@ -68,20 +68,9 @@ export function RunsPage({
     onError: (err) => toast.error(reason(err, copy.couldNotStart)),
   })
 
-  // Run was just clicked (`run.ts`): a placeholder until the start answers and the list has the run.
-  const starting = useMutationState({
-    filters: { mutationKey: workflowKeys.start, status: 'pending' },
-  }).length
-
   const all = runs.data ?? []
   const shown = filterRuns(all, { q, status, age }, now)
-  const none = runs.isSuccess && all.length === 0 && !starting
-  const target = search.run
-  const listed = !!target && shown.some((r) => r.id === target)
-  useEffect(() => {
-    if (listed)
-      document.querySelector(`[data-card="${target}"]`)?.scrollIntoView({ block: 'nearest' })
-  }, [listed, target])
+  const none = runs.isSuccess && all.length === 0
 
   let body
   if (runs.isError && !runs.data)
@@ -97,11 +86,17 @@ export function RunsPage({
         }
       />
     )
-  else if (runs.isPending) body = <PageLoader label={copy.loadingRuns} />
+  else if (runs.isPending)
+    body = (
+      <div className="flex flex-col gap-3" aria-busy="true">
+        {[0, 1].map((i) => (
+          <Skeleton key={i} className="h-24" />
+        ))}
+      </div>
+    )
   else if (none)
     body = (
       <EmptyState
-        icon={Workflow}
         title={copy.noRuns}
         action={
           <Button asChild variant="outline">
@@ -112,24 +107,7 @@ export function RunsPage({
         {copy.noRunsText}
       </EmptyState>
     )
-  else if (!shown.length)
-    body = (
-      <EmptyState
-        icon={SearchX}
-        title={copy.noRunsMatch}
-        action={
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => setSearch({ q: undefined, status: undefined, age: undefined })}
-          >
-            {copy.clearFilters}
-          </Button>
-        }
-      >
-        {copy.noRunsMatchText}
-      </EmptyState>
-    )
+  else if (!shown.length) body = <p className="text-sm text-muted-foreground">{copy.noRunsMatch}</p>
   else
     body = (
       <ul aria-label={copy.runsList} className="flex flex-col gap-3">
@@ -137,10 +115,7 @@ export function RunsPage({
           <li key={r.id}>
             <RunCard
               run={r}
-              open={
-                toggled[r.id] ??
-                (r.id === target || r.status === 'pending' || r.status === 'running')
-              }
+              open={toggled[r.id] ?? (r.status === 'pending' || r.status === 'running')}
               onOpenChange={(o) => setToggled((t) => ({ ...t, [r.id]: o }))}
               onRerun={() => r.maf_id && rerun.mutate(r.maf_id)}
               rerunning={rerun.isPending && rerun.variables === r.maf_id}
@@ -201,15 +176,6 @@ export function RunsPage({
           </SelectContent>
         </Select>
       </div>
-      {starting ? (
-        <div
-          role="status"
-          className="flex items-center gap-3 rounded-xl border border-primary/40 bg-card p-4 text-sm text-muted-foreground"
-        >
-          <Loader2 className="size-4 animate-spin motion-reduce:animate-none" aria-hidden />
-          {copy.startingRun}
-        </div>
-      ) : null}
       {body}
     </div>
   )
@@ -252,10 +218,9 @@ function RunCard({
       data-card={run.id}
       className={cn(
         'rounded-xl border bg-card',
-        // A tinted hairline, not a ring (user request 2026-10-02: the 2 px ring read too bold).
-        run.status === 'awaiting_human' && 'border-warning/60',
+        run.status === 'awaiting_human' && 'ring-2 ring-warning/50',
         // The one being read wins over "needs attention".
-        open && 'border-primary/40',
+        open && 'ring-2 ring-primary/40',
       )}
     >
       <div className="flex flex-wrap items-start gap-x-3 gap-y-2 p-4">

@@ -38,6 +38,7 @@ pub mod runtime;
 pub mod secrets;
 pub mod seed;
 pub mod settings;
+pub mod spa;
 pub mod state;
 pub mod telemetry;
 pub mod titling;

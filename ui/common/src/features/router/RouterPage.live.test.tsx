@@ -41,11 +41,9 @@ describe('partial mocks in live mode', () => {
       renderApp('/router')
       await screen.findByRole('table', { name: copy.agentsTitle })
       await waitFor(() =>
-        expect(
-          within(screen.getByRole('navigation', { name: copy.summaryLabel })).getByRole('button', {
-            name: '19 agents',
-          }),
-        ).toBeInTheDocument(),
+        expect(screen.getByRole('navigation', { name: copy.summaryLabel })).toHaveTextContent(
+          '19 agents',
+        ),
       )
       expect(screen.queryByText(copy.noConfigs)).toBeNull()
       // The live user owns these rows, so the sheet offers their own configs.

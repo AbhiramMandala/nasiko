@@ -75,9 +75,7 @@ describe('Overview failures', () => {
     ).toBeInTheDocument()
   })
 
-  // Budgets hidden (no server support for /api/budgets yet, R-L10): un-skip with the commented budget code.
-
-  it.skip('treats a bare 404 from /api/budgets as absent: no failed line and no budget rows', async () => {
+  it('treats a bare 404 from /api/budgets as absent: no failed line and no budget rows', async () => {
     server.use(http.get('/api/budgets', () => new HttpResponse('Not Found', { status: 404 })))
     const rec = recordRequests()
     renderApp('/')
@@ -92,9 +90,7 @@ describe('Overview failures', () => {
     expect(rec.urls.map((u) => u.pathname)).toContain('/api/budgets')
   })
 
-  // Budgets hidden (no server support for /api/budgets yet, R-L10): un-skip with the commented budget code.
-
-  it.skip("says it couldn't check budgets when they fail, and never claims an all-clear", async () => {
+  it("says it couldn't check budgets when they fail, and never claims an all-clear", async () => {
     configureMocks({ routerVariants: ['router-budgets-fail'] })
     renderApp('/')
     const needs = await card('overview-needs')

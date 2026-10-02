@@ -55,8 +55,7 @@ export function Disclosure({
       <CollapsibleContent
         role="region"
         aria-labelledby={titleId}
-        // The negative margin widens the clip box so a field's focus ring (2 px + 2 px offset) isn't cut at the sides.
-        className="-mx-1.5 overflow-hidden px-1.5 data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down motion-reduce:animate-none"
+        className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down motion-reduce:animate-none"
       >
         <div className="flex flex-col gap-4 pb-4">{children}</div>
       </CollapsibleContent>

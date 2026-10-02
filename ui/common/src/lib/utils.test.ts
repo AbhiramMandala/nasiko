@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cn, uuid } from './utils'
+import { uuid } from './utils'
 
 describe('uuid', () => {
   afterEach(() => vi.unstubAllGlobals())
@@ -15,13 +15,5 @@ describe('uuid', () => {
     const ids = new Set(Array.from({ length: 50 }, uuid))
     expect(ids.size).toBe(50)
     for (const id of ids) expect(id).toMatch(v4)
-  })
-})
-
-describe('cn', () => {
-  it('knows the theme’s own sizes (index.css @theme)', () => {
-    expect(cn('w-3/4 sm:max-w-sm', 'sm:max-w-sheet-lg')).toBe('w-3/4 sm:max-w-sheet-lg')
-    expect(cn('text-code', 'text-muted-foreground')).toBe('text-code text-muted-foreground')
-    expect(cn('text-sm', 'text-lead')).toBe('text-lead')
   })
 })

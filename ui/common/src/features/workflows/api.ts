@@ -36,8 +36,6 @@ export const workflowKeys = {
   runs: ['workflows', 'runs'] as const,
   runList: ['workflows', 'runs', 'list'] as const,
   run: (id: string) => ['workflows', 'runs', id] as const,
-  /** The Run button's mutation (`run.ts`), read by the run page while it starts. */
-  start: ['workflows', 'start'] as const,
 }
 
 const json = (method: string, body?: unknown): RequestInit => ({

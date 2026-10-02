@@ -1,27 +1,22 @@
 /** Every user-facing string of the app shell (sidebar, theme menu, sign out). */
 export const copy = {
   brand: 'Nasiko',
-  brandTooltip: '',
+  brandTooltip: 'Nasiko, go to Chat',
   navLabel: 'Main',
-  // The drill-in panel's way back (Chat, Settings): it reads "Back"; its name (and tooltip) says where to: the page
-  // the user came from, or, opened directly, the app nav (the page stays where it is). The visible word leads the name.
-  back: 'Back',
-  backTo: (page: string) => `Back to ${page}`,
-  backToMenu: 'Back to main menu',
-  statusPage: 'Status',
   skipToContent: 'Skip to content',
   openMenu: 'Open navigation',
   collapse: 'Collapse',
   expand: 'Expand',
   collapseShortcut: (mac: boolean) => (mac ? '⌘B' : 'Ctrl+B'),
   nav: {
-    fleet: 'Fleet',
-    connect: 'Connect',
     observe: 'Observe',
+    manage: 'Manage',
     lab: 'Lab',
     overview: 'Overview',
     chat: 'Chat',
     agents: 'Agents',
+    deploy: 'Deploy',
+    builds: 'Builds',
     router: 'LLM router',
     mcp: 'MCP servers',
     workflows: 'Workflows',
@@ -41,8 +36,8 @@ export const copy = {
   notFound: {
     title: 'Page not found',
     body: "There's nothing at this address. It may have moved, or the link is mistyped.",
-    home: 'Back to Overview',
     toChat: 'Go to Chat',
+    toTokenops: 'Go to TokenOps',
   },
   status: {
     checking: 'Checking…',
@@ -61,7 +56,7 @@ export const copy = {
   },
   theme: {
     menu: 'Theme',
-    modeGroup: 'Mode',
+    themeGroup: 'Mode',
     accentGroup: 'Theme',
     system: 'System',
     light: 'Light',
@@ -79,22 +74,18 @@ export const copy = {
     retry: 'Retry',
     signOut: 'Sign out',
     signingOut: 'Signing out…',
-    settings: 'Settings',
+    changePassword: 'Change password',
   },
   login: {
     title: 'Sign in to Nasiko',
     // The decorative showcase beside the form (aria-hidden; the h1 names the page). Its chips are `nav` labels.
     showcaseTitle: 'Nasiko',
-    // nasiko.com's hero: the lead, then each word in turn, looping (LoginShowcase). In the prototype's order; the
-    // chips and the layer stack carry the same words.
+    // nasiko.com's hero: the lead, then each word typed in turn, looping (LoginShowcase).
     showcaseLead: 'The OpenRuntime for',
-    showcaseWords: ['Agents', 'Coding Harnesses', 'Tools', 'Frameworks'],
+    showcaseWords: ['agents.', 'tools.', 'frameworks.', 'coding harnesses.'],
     showcaseLine: 'Use any harness. Reach any model. Measure every token. Change nothing.',
     username: 'Username',
     password: 'Password',
-    usernamePlaceholder: 'Enter username',
-    passwordPlaceholder: 'Enter password',
-    showPassword: 'Show password',
     // Only reachable where native `required` doesn't stop the submit first.
     usernameRequired: 'Enter your username.',
     passwordRequired: 'Enter your password.',

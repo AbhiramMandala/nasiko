@@ -7,9 +7,7 @@
 import { Link } from '@tanstack/react-router'
 import { CircleCheck, TriangleAlert } from 'lucide-react'
 import { useRef } from 'react'
-import { EmptyState } from '@/components/shared/state-card'
 import { Badge } from '@/components/ui/badge'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { fmtLatency } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { FleetHealth as FleetHealthData } from '../api'
@@ -102,12 +100,11 @@ export function FleetHealth({ fleet, className }: { fleet: FleetHealthData; clas
             className="grid grid-cols-[repeat(auto-fill,minmax(0.75rem,1fr))] gap-1"
           >
             {squares.map((a) => (
-              <Tooltip key={a.id}>
-                <TooltipTrigger asChild>
-                  <span className={cn('h-5 rounded-xs', SEGMENT[a.rating])} />
-                </TooltipTrigger>
-                <TooltipContent>{`${a.name} · ${copy.rating[a.rating]}`}</TooltipContent>
-              </Tooltip>
+              <span
+                key={a.id}
+                title={`${a.name} · ${copy.rating[a.rating]}`}
+                className={cn('h-5 rounded-xs', SEGMENT[a.rating])}
+              />
             ))}
           </div>
           {fleet.costFailed ? (
@@ -116,9 +113,9 @@ export function FleetHealth({ fleet, className }: { fleet: FleetHealthData; clas
           {total > 0 && rated === 0 ? (
             // Nothing rated: no agent is deployed (else the cost-data line above says why). QA ISSUE-004.
             fleet.deployedCount === 0 ? (
-              <div data-testid="health-none-deployed">
-                <EmptyState title={copy.health.noneDeployed} className="py-6 md:py-6" />
-              </div>
+              <p className="text-xs text-muted-foreground" data-testid="health-none-deployed">
+                {copy.health.noneDeployed}
+              </p>
             ) : null
           ) : (
             <div>

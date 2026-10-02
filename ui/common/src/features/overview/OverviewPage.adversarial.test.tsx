@@ -118,8 +118,7 @@ describe('a failed cost input', () => {
 })
 
 describe('a stopped budget on an agent that is not rated', () => {
-  // Budgets hidden (no server support for /api/budgets yet, R-L10): un-skip with the commented budget code.
-  it.skip('still shows the budget in Needs you', async () => {
+  it('still shows the budget in Needs you', async () => {
     const stopped = budgetMockState().budgets.find((b) => b.agent_id && b.action === 'stop')!
     server.use(
       http.get('*/api/agents', ({ request }) => {

@@ -111,7 +111,6 @@ import { nameProblem } from '@/features/deploy/name'
 import { parseVersion } from '@/features/deploy/version'
 import { DEFAULT_REGISTRY, parseReference } from '@/features/deploy/registry'
 import type { BuildStatus, UploadPipelineStatus } from '@/features/deploy/types'
-import { PERSONAS, type Persona } from '@/features/onboarding/types'
 
 // Built on first use, so mock mode doesn't block first paint on seed generation.
 let seed: Seed | null = null
@@ -224,10 +223,6 @@ export const MOCK_VARIANTS = [
   'workflows-classic',
   'workflows-no-key',
   'workflows-planner-fails',
-  // Onboarding (docs/superpowers/specs/2026-10-01-login-onboarding-design.md §5): a server without
-  // /api/me/onboarding (bare 404), or a user who already picked a persona.
-  'onboarding-absent',
-  'onboarding-done',
   ...CHAT_PAGE_VARIANTS,
   ...ROUTER_PAGE_VARIANTS,
 ] as const
@@ -445,16 +440,6 @@ export const budgetMockState = (): BudgetMockStore => getBudgets()
 /** The router mock's live state, for tests that change it under the page (plan §8 ordering test). */
 export const routerMockState = (): RouterState => getRouter()
 
-/** The caller's onboarding row (nasiko-cloud-rs 41f776ae `onboarding.rs`). Tests start completed, so every page renders
- *  as before; the browser bootstrap starts a first-time user and keeps the row across reloads (browser.ts). */
-export interface MockOnboarding {
-  persona: Persona | null
-  completed: boolean
-}
-const ONBOARDED: MockOnboarding = { persona: 'developer', completed: true }
-let onboardingRow: MockOnboarding = ONBOARDED
-let persistOnboarding: ((row: MockOnboarding) => void) | null = null
-
 /** An edition's own mock state, dropped with the core's (EE: the SSO settings and SCIM tokens). */
 const editionResets = new Set<() => void>()
 export const onMockReset = (fn: () => void) => void editionResets.add(fn)
@@ -471,7 +456,6 @@ export function resetAgentsMock() {
   settingsRow = null
   secretValues = new Map()
   mockPassword = null
-  onboardingRow = ONBOARDED
   resetChatMock()
   // The chat knobs tests can turn (v1c DX3).
   fixedSuperuser = null
@@ -500,14 +484,8 @@ export function configureMocks(
     routerVariants?: readonly (typeof ROUTER_PAGE_VARIANTS)[number][]
     /** An edition's session (EE: the seed admin whatever the persona); null returns to the viewer. */
     session?: (() => SessionUser) | null
-    /** The caller's onboarding row, e.g. `{ persona: null, completed: false }` for a first-time user. */
-    onboarding?: MockOnboarding
-    /** Called whenever a PATCH changes the onboarding row (the browser bootstrap stores it). */
-    persistOnboarding?: ((row: MockOnboarding) => void) | null
   } = {},
 ) {
-  if (opts.onboarding) onboardingRow = opts.onboarding
-  if (opts.persistOnboarding !== undefined) persistOnboarding = opts.persistOnboarding
   if (opts.session !== undefined) editionSession = opts.session
   if (opts.superuser !== undefined) fixedSuperuser = opts.superuser
   if (opts.chatVariants !== undefined)
@@ -612,29 +590,6 @@ function sseStream(lines: string[], closeMessage: string): ReadableStream<Uint8A
 }
 
 export const handlerGroups: Record<Mockable, HttpHandler[]> = {
-  // nasiko-cloud-rs 41f776ae `onboarding.rs`: bare JSON; a persona outside the enum is Axum's 422 Json rejection.
-  onboarding: [
-    http.get('/api/me/onboarding', () => {
-      if (!loggedIn) return unauthorized()
-      if (variant() === 'onboarding-absent') return new HttpResponse(null, { status: 404 })
-      const row = variant() === 'onboarding-done' ? ONBOARDED : onboardingRow
-      return HttpResponse.json({ is_first_time_user: !row.completed, persona: row.persona })
-    }),
-    http.patch('/api/me/onboarding', async ({ request }) => {
-      if (!loggedIn) return unauthorized()
-      if (variant() === 'onboarding-absent') return new HttpResponse(null, { status: 404 })
-      const body = (await request.json().catch(() => null)) as { persona?: unknown } | null
-      const persona = body?.persona
-      if (typeof persona !== 'string' || !(PERSONAS as readonly string[]).includes(persona))
-        return text(
-          `Failed to deserialize the JSON body into the target type: persona: unknown variant \`${String(persona)}\`, expected one of ${PERSONAS.map((p) => `\`${p}\``).join(', ')}`,
-          422,
-        )
-      onboardingRow = { persona: persona as Persona, completed: true }
-      persistOnboarding?.(onboardingRow)
-      return HttpResponse.json({ is_first_time_user: false, persona })
-    }),
-  ],
   auth: [
     http.get('/api/me', () => {
       if (!loggedIn) return unauthorized()

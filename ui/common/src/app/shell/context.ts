@@ -5,8 +5,8 @@
  *
  * | Param     | Type                              | Default | Read by                  | Carried across routes |
  * |-----------|-----------------------------------|---------|--------------------------|-----------------------|
- * | preset    | 24h·7d·30d·mtd·last-month·custom   | 30d (Sessions: 7d) | TokenOps, Sessions       | yes, except into Sessions and TokenOps (`withoutWindow`) |
- * | from, to  | YYYY-MM-DD (custom window)        | —       | TokenOps, Sessions       | as preset |
+ * | preset    | 24h·7d·30d·mtd·last-month·custom   | 30d     | TokenOps, Sessions       | yes |
+ * | from, to  | YYYY-MM-DD (custom window)        | —       | TokenOps, Sessions       | yes |
  * | agent     | TokenOps: UUID or raw name; Sessions: raw name | — | all             | yes |
  * | provider  | string                            | —       | TokenOps (Sessions: shown as not applied) | yes |
  * | model     | string                            | —       | TokenOps (Sessions: shown as not applied) | yes |
@@ -73,12 +73,6 @@ export function pickShared(search: Record<string, unknown>): Partial<SharedSearc
   const out: Record<string, unknown> = {}
   for (const k of SHARED_KEYS) if (search[k] !== undefined) out[k] = search[k]
   return out as Partial<SharedSearch>
-}
-
-/** Links into Sessions and TokenOps: the shared keys minus the window, so each starts on its own (7d, 30d). */
-export function withoutWindow(search: Record<string, unknown>): Partial<SharedSearch> {
-  const { preset, from, to, ...rest } = pickShared(search)
-  return rest
 }
 
 /** Compare period defaults to on; only an explicit `compare=0` turns it off. */

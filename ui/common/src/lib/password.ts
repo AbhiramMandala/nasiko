@@ -1,6 +1,6 @@
 /**
  * The server's password policy, `validate_password` (nasiko-cloud-rs `43833316`, oss/auth/src/lib.rs), for the
- * Settings → Account → Password form. Client-side feedback only: the server enforces it regardless. Rules are
+ * account menu's Change password dialog. Client-side feedback only: the server enforces it regardless. Rules are
  * checked in the server's order, so both complain about the same thing first. Unicode-aware like Rust's `char`
  * classes: lengths count code points, bytes count UTF-8 (what bcrypt reads).
  */

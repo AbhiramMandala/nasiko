@@ -13,7 +13,6 @@ import { ADMIN_ID } from '@/mocks/seed-harness'
 import { setupPinnedSeed } from '@/test/pinnedSeed'
 import { renderApp } from '@/test/renderApp'
 import { server } from '@/test/setup'
-import { copy } from './copy'
 import { clearDrafts, readDraft, writeDraft } from './drafts'
 import { clearChatRegistry } from './registry'
 import { readRememberedTarget, rememberTarget } from './rememberTarget'
@@ -459,23 +458,18 @@ describe('the rail (test 11)', () => {
     expect(within(rail).getByRole('radio', { name: 'Recorded (2)' })).toBeInTheDocument()
   })
 
-  it('with no sidebar cookie, /chat keeps the open sidebar and puts its history there, writing nothing (E1)', async () => {
+  it('with no sidebar cookie, /chat shows the app sidebar as its icon rail, and nothing is written (D3, E1)', async () => {
     const width = window.innerWidth
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
     try {
       const { router } = renderApp('/agents')
-      const sidebar = () => document.querySelector<HTMLElement>('[data-slot="sidebar"]')
-      await waitFor(() => expect(sidebar()?.getAttribute('data-state')).toBe('expanded'))
+      const state = () =>
+        document.querySelector('[data-slot="sidebar"]')?.getAttribute('data-state')
+      await waitFor(() => expect(state()).toBe('expanded'))
       await router.navigate({ to: '/chat' })
-      // One sidebar: the history is its drill-in panel, not a second column beside it.
-      const newChat = await within(sidebar()!).findByRole('link', { name: copy.newChat })
-      expect(newChat).toBeInTheDocument()
-      expect(sidebar()?.getAttribute('data-state')).toBe('expanded')
-      expect(screen.getAllByRole('link', { name: copy.newChat })).toHaveLength(1)
+      await waitFor(() => expect(state()).toBe('collapsed'))
       await router.navigate({ to: '/agents' })
-      await waitFor(() =>
-        expect(within(sidebar()!).queryByRole('link', { name: copy.newChat })).toBeNull(),
-      )
+      await waitFor(() => expect(state()).toBe('expanded'))
       expect(document.cookie).not.toMatch(/sidebar_state=/)
     } finally {
       Object.defineProperty(window, 'innerWidth', { configurable: true, value: width })

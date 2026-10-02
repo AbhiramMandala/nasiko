@@ -27,17 +27,6 @@ const agentRows = () =>
   within(screen.getByRole('table', { name: copy.agentsTitle })).getAllByRole('row')
 const rowFor = (name: string) => screen.getByRole('link', { name }).closest('tr') as HTMLElement
 const strip = () => screen.getByRole('navigation', { name: copy.summaryLabel })
-/** The summary tiles' names, which carry the strip's sentences ("5 attached"). */
-const stripText = () =>
-  within(strip())
-    .getAllByRole('button')
-    .map((b) => b.getAttribute('aria-label'))
-    .join(' · ')
-/** The page shows one tab at a time (Agents first). */
-const showTab = async (name: string) => {
-  const tab = await screen.findByRole('tab', { name })
-  if (tab.getAttribute('aria-selected') !== 'true') await userEvent.click(tab)
-}
 /** Picks an option from a shadcn Select (it opens a listbox; there is no native select to target). */
 const choose = async (combobox: HTMLElement, option: string) => {
   await userEvent.click(combobox)
@@ -46,26 +35,20 @@ const choose = async (combobox: HTMLElement, option: string) => {
 const configsList = () => screen.getByRole('list', { name: copy.configsTitle })
 const configItem = (name: string) =>
   within(configsList()).getByText(name, { exact: true }).closest('li') as HTMLElement
-const openMenu = async (name: string) => {
-  await showTab(copy.anchors.configs)
-  await userEvent.click(screen.getByRole('button', { name: copy.configActions(name) }))
-}
+const openMenu = async (name: string) =>
+  userEvent.click(screen.getByRole('button', { name: copy.configActions(name) }))
 
 describe('layout', () => {
-  it('shows the tabs in order, with summary tiles that count the rows', async () => {
+  it('shows the sections in order, with a summary strip that counts the rows', async () => {
     renderApp('/router')
     await ready()
-    expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual([
-      copy.anchors.agents,
-      copy.anchors.configs,
-      copy.anchors.providers,
-    ])
-    // One tab at a time: Your agents first.
-    expect(screen.queryByRole('heading', { name: copy.configsTitle })).toBeNull()
-    expect(stripText()).toContain('19 agents')
-    expect(stripText()).toContain('14 on your default (anthropic, your key)')
-    expect(stripText()).toContain('5 attached')
-    expect(stripText()).toContain('0 no config (platform key)')
+    const headings = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent)
+    expect(headings.indexOf(copy.agentsTitle)).toBeLessThan(headings.indexOf(copy.configsTitle))
+    expect(headings.indexOf(copy.configsTitle)).toBeLessThan(headings.indexOf(copy.providersTitle))
+    expect(strip()).toHaveTextContent('19 agents')
+    expect(strip()).toHaveTextContent('14 on your default (anthropic, your key)')
+    expect(strip()).toHaveTextContent('5 attached')
+    expect(strip()).toHaveTextContent('0 no config (platform key)')
   })
 
   it('opens "How routing works" on a first visit with no configs and remembers a choice', async () => {
@@ -121,11 +104,11 @@ describe('agents section states', () => {
     )
     renderApp('/router')
     await screen.findByText(copy.couldntRead)
-    await waitFor(() => expect(stripText()).toContain('at least 13 on your default'))
+    await waitFor(() => expect(strip()).toHaveTextContent('at least 13 on your default'))
     fail = false
     server.resetHandlers()
     await userEvent.click(within(rowFor('Doc Writer')).getByRole('button', { name: copy.retry }))
-    await waitFor(() => expect(stripText()).toContain('14 on your default'))
+    await waitFor(() => expect(strip()).toHaveTextContent('14 on your default'))
   })
 
   it('filter links narrow the rows and Show all clears them', async () => {
@@ -186,7 +169,7 @@ describe('spend', () => {
     // Said once, visibly, under the table; each cell marks the gap (with the reason for screen readers).
     expect(await screen.findByText(copy.spendFailed, { selector: 'p' })).toBeInTheDocument()
     expect(rowFor('Code Reviewer')).toHaveTextContent(copy.spendFailed)
-    expect(stripText()).toContain('14 on your default')
+    expect(strip()).toHaveTextContent('14 on your default')
   })
 })
 
@@ -194,7 +177,6 @@ describe('configs', () => {
   it('lists configs with the Default badge and Used by counts', async () => {
     renderApp('/router')
     await ready()
-    await showTab(copy.anchors.configs)
     const def = configItem('anthropic-default')
     expect(def).toHaveTextContent(copy.defaultBadge)
     await waitFor(() => expect(def).toHaveTextContent(copy.usedBy('15')))
@@ -205,7 +187,6 @@ describe('configs', () => {
     configureMocks({ routerVariants: ['router-empty'] })
     const rec = recordRequestBodies()
     renderApp('/router')
-    await showTab(copy.anchors.configs)
     await screen.findByText(copy.noConfigs)
     await userEvent.click(screen.getByRole('button', { name: copy.createFirst }))
     const sheet = await screen.findByRole('dialog', { name: copy.editorNew })
@@ -229,7 +210,7 @@ describe('configs', () => {
       is_default: true,
     })
     await waitFor(() =>
-      expect(stripText()).toContain('19 on your default (anthropic, platform key)'),
+      expect(strip()).toHaveTextContent('19 on your default (anthropic, platform key)'),
     )
   })
 
@@ -237,7 +218,6 @@ describe('configs', () => {
     const rec = recordRequestBodies()
     renderApp('/router')
     await ready()
-    await showTab(copy.anchors.configs)
     await openMenu('research-tiers')
     await userEvent.click(await screen.findByRole('menuitem', { name: copy.edit }))
     const sheet = await screen.findByRole('dialog', { name: copy.editorEdit('research-tiers') })
@@ -261,7 +241,6 @@ describe('configs', () => {
     const rec = recordRequestBodies()
     renderApp('/router')
     await ready()
-    await showTab(copy.anchors.configs)
     await openMenu('anthropic-default')
     await userEvent.click(await screen.findByRole('menuitem', { name: copy.edit }))
     const sheet = await screen.findByRole('dialog', { name: copy.editorEdit('anthropic-default') })
@@ -277,7 +256,6 @@ describe('configs', () => {
   it('set and remove the default', async () => {
     renderApp('/router')
     await ready()
-    await showTab(copy.anchors.configs)
     await openMenu('research-tiers')
     await userEvent.click(await screen.findByRole('menuitem', { name: copy.setDefault }))
     await waitFor(() => expect(configItem('research-tiers')).toHaveTextContent(copy.defaultBadge))
@@ -287,14 +265,13 @@ describe('configs', () => {
     await waitFor(() =>
       expect(configItem('research-tiers')).not.toHaveTextContent(copy.defaultBadge),
     )
-    await waitFor(() => expect(stripText()).toContain('14 no config (platform key)'))
+    await waitFor(() => expect(strip()).toHaveTextContent('14 no config (platform key)'))
   })
 
   it('duplicate prefills a unique name and saves a new config', async () => {
     const rec = recordRequestBodies()
     renderApp('/router')
     await ready()
-    await showTab(copy.anchors.configs)
     await openMenu('fast-openai')
     await userEvent.click(await screen.findByRole('menuitem', { name: copy.duplicate }))
     const sheet = await screen.findByRole('dialog', { name: copy.editorDuplicate('fast-openai') })
@@ -317,7 +294,6 @@ describe('configs', () => {
   it('deletes an unused config', async () => {
     renderApp('/router')
     await ready()
-    await showTab(copy.anchors.configs)
     // Detach both research-tiers agents first through the mock, so this one is unused.
     for (const [id, r] of routerMockState().routing)
       if (r.llm_config_id === configId(2))
@@ -332,7 +308,6 @@ describe('configs', () => {
   it('an in-use delete lists the attached agents with Change routing', async () => {
     renderApp('/router')
     await ready()
-    await showTab(copy.anchors.configs)
     await openMenu('research-tiers')
     await userEvent.click(await screen.findByRole('menuitem', { name: copy.delete }))
     const dialog = await screen.findByRole('alertdialog')
@@ -348,7 +323,6 @@ describe('configs', () => {
   it('deleting the default warns what it moves', async () => {
     renderApp('/router')
     await ready()
-    await showTab(copy.anchors.configs)
     await openMenu('anthropic-default')
     await userEvent.click(await screen.findByRole('menuitem', { name: copy.delete }))
     const dialog = await screen.findByRole('alertdialog')
@@ -359,7 +333,6 @@ describe('configs', () => {
     configureMocks({ routerVariants: ['router-legacy'] })
     renderApp('/router')
     await ready()
-    await showTab(copy.anchors.configs)
     await waitFor(() =>
       expect(configItem('cli-openrouter')).toHaveTextContent(copy.openrouterHidden),
     )
@@ -374,7 +347,6 @@ describe('configs', () => {
     )
     renderApp('/router')
     await ready()
-    await showTab(copy.anchors.configs)
     const configs = screen.getByRole('heading', { name: copy.configsTitle }).closest('section')!
     expect(await within(configs).findByRole('button', { name: copy.retry })).toBeInTheDocument()
   })
@@ -384,7 +356,6 @@ describe('providers', () => {
   it('lists the catalog, marks google as not routable and shows the registry', async () => {
     renderApp('/router')
     await ready()
-    await showTab(copy.anchors.providers)
     const providers = screen.getByRole('heading', { name: copy.providersTitle }).closest('section')!
     expect(within(providers).getByText(copy.notRoutable('google'))).toBeInTheDocument()
     expect(within(providers).getByText(copy.registryTitle)).toBeInTheDocument()
@@ -395,7 +366,6 @@ describe('providers', () => {
     configureMocks({ routerVariants: ['router-catalog-fail'] })
     renderApp('/router')
     await ready()
-    await showTab(copy.anchors.providers)
     expect(await screen.findByText(copy.catalogFailed)).toBeInTheDocument()
   })
 })
@@ -437,7 +407,6 @@ describe('axe', () => {
     await check()
     await userEvent.keyboard('{Escape}')
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
-    await showTab(copy.anchors.providers)
     await userEvent.click(screen.getByRole('button', { name: copy.addCustom }))
     await screen.findByRole('dialog', { name: copy.cpNew })
     await check()
@@ -451,7 +420,6 @@ describe('axe', () => {
   it('the config editor', async () => {
     renderApp('/router')
     await ready()
-    await showTab(copy.anchors.configs)
     await userEvent.click(screen.getByRole('button', { name: copy.newConfig }))
     await screen.findByRole('dialog', { name: copy.editorNew })
     await check()
@@ -484,7 +452,7 @@ describe('review fixes', () => {
     await userEvent.click(
       within(rowFor('Code Reviewer')).getByRole('button', { name: 'fast-openai' }),
     )
-    await waitFor(() => expect(configItem('fast-openai')).toHaveFocus())
+    expect(configItem('fast-openai')).toHaveFocus()
   })
 
   it('an empty or failed model registry says so', async () => {
@@ -495,7 +463,6 @@ describe('review fixes', () => {
     )
     renderApp('/router')
     await ready()
-    await showTab(copy.anchors.providers)
     expect(await screen.findByText(copy.registryEmpty)).toBeInTheDocument()
   })
 
@@ -509,7 +476,7 @@ describe('review fixes', () => {
     s.configs.find((c) => c.id === configId(2))!.updated_at = new Date(now() + 60_000).toISOString()
     s.configs.find((c) => c.id === configId(1))!.updated_at = new Date(now() + 60_000).toISOString()
     await queryClient.refetchQueries({ queryKey: ['router', 'configs'] })
-    await waitFor(() => expect(stripText()).toContain('on your default (openai, your key)'))
+    await waitFor(() => expect(strip()).toHaveTextContent('on your default (openai, your key)'))
     expect(calls.urls.filter((u) => u.pathname.endsWith('/llm-config')).length).toBeGreaterThan(
       before,
     )

@@ -3,11 +3,10 @@
  * (`GET /api/builds/agent/{id}`), each opening the same Build page. Rows follow the Builds list (two lines on phones).
  */
 import { Link } from '@tanstack/react-router'
-import { Hammer } from 'lucide-react'
-import { PageLoader } from '@/components/shared/page-loader'
 import { PanelError } from '@/components/shared/panel'
 import { EmptyState, StateCard } from '@/components/shared/state-card'
 import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
 import {
   Table,
   TableBody,
@@ -28,7 +27,14 @@ export function AgentBuildsTab({ agentId, agentName }: { agentId: string; agentN
   const rows = q.data?.available ? q.data.value : []
   const reasons = useFailureDetails(rows.filter((b) => b.status === 'failed').map((b) => b.id))
   const now = q.dataUpdatedAt
-  if (q.isPending) return <PageLoader label={copy.builds.loading} inline className="min-h-64" />
+  if (q.isPending)
+    return (
+      <div className="flex flex-col gap-2" aria-busy="true">
+        {Array.from({ length: 3 }, (_, i) => (
+          <Skeleton key={i} className="h-11 w-full" />
+        ))}
+      </div>
+    )
   if (q.isError)
     return (
       <PanelError error={q.error} onRetry={() => void q.refetch()} what={copy.agentBuilds.what} />
@@ -43,7 +49,7 @@ export function AgentBuildsTab({ agentId, agentName }: { agentId: string; agentN
   )
   if (!rows.length)
     return (
-      <EmptyState icon={Hammer} title={copy.agentBuilds.empty} action={deploy}>
+      <EmptyState title={copy.agentBuilds.empty} action={deploy}>
         {copy.agentBuilds.emptyHint}
       </EmptyState>
     )

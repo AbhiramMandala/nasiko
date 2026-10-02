@@ -14,8 +14,7 @@ import { z } from 'zod'
 import { useSlots } from '@/app/edition-context'
 import { LeaveGuard } from '@/components/shared/leave-guard'
 import { PageHeader } from '@/components/shared/page-header'
-import { PageLoader } from '@/components/shared/page-loader'
-import { PanelError } from '@/components/shared/panel'
+import { PanelError, PanelSkeleton } from '@/components/shared/panel'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -106,11 +105,11 @@ export function SettingsPage({
     : 'general'
   const head = copy.sections[section]
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-4">
       {layer ? <layer.Section /> : <PageHeader title={head.label} description={head.sub} />}
       <div hidden={!!layer}>
         {settings.isPending ? (
-          <PageLoader label={copy.loading} />
+          <PanelSkeleton height={240} />
         ) : settings.isError ? (
           <PanelError
             error={settings.error}
@@ -228,24 +227,8 @@ function SettingsForm({
     )
   }
   return (
-    <form onSubmit={(e) => void onSubmit(e)} noValidate>
-      <SettingRows
-        footer={
-          <>
-            {isDirty ? (
-              <span className="mr-auto text-sm text-muted-foreground">{copy.unsaved}</span>
-            ) : null}
-            <Button
-              type="submit"
-              size="sm"
-              className="pointer-coarse:min-h-11"
-              disabled={save.isPending}
-            >
-              {save.isPending ? copy.saving : copy.save}
-            </Button>
-          </>
-        }
-      >
+    <form onSubmit={(e) => void onSubmit(e)} noValidate className="flex flex-col gap-4">
+      <SettingRows>
         {CORE_SECTIONS.map((s) => (
           // Every section stays mounted, like the legacy page's panels: hidden ones keep their inputs registered.
           <div key={s} hidden={s !== section}>
@@ -277,6 +260,11 @@ function SettingsForm({
           </div>
         ))}
       </SettingRows>
+      <div className="flex justify-end">
+        <Button type="submit" disabled={save.isPending}>
+          {save.isPending ? copy.saving : copy.save}
+        </Button>
+      </div>
       <LeaveGuard when={isDirty && !isSubmitting && !save.isPending} samePath />
     </form>
   )

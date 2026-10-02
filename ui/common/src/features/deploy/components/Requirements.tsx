@@ -1,17 +1,9 @@
 /**
- * "What your zip needs" (plans/feat-deploy.md §4.1; design review 4, 6, 15): a muted icon per item until a file is read,
+ * "What your zip needs" (plans/feat-deploy.md §4.1; design review 4, 6, 15): neutral circles until a file is read,
  * then a tick or a cross with a one-line fix. Phones get a compact line above the drop zone that opens itself when a
  * check fails.
  */
-import {
-  CheckCircle2,
-  ChevronRight,
-  Container,
-  FileCode,
-  HardDrive,
-  Tag,
-  XCircle,
-} from 'lucide-react'
+import { CheckCircle2, ChevronRight, Circle, XCircle } from 'lucide-react'
 import { useState } from 'react'
 import { Card } from '@/components/ui/card'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
@@ -20,14 +12,6 @@ import { cn } from '@/lib/utils'
 import { copy } from '../copy'
 import type { ChecklistItem } from '../errors'
 import { CHECKLIST_ITEMS as ITEMS, type ItemResult, type ItemResults } from '../zipcheck'
-
-// Before a file is read each row shows what it is about, not an empty circle (which reads as a radio button).
-const ITEM_ICON = {
-  dockerfile: Container,
-  entrypoint: FileCode,
-  version: Tag,
-  size: HardDrive,
-} as const
 
 function ItemRow({
   id,
@@ -38,8 +22,7 @@ function ItemRow({
   result: ItemResult
   compact?: boolean
 }) {
-  const Icon =
-    result.state === 'pass' ? CheckCircle2 : result.state === 'fail' ? XCircle : ITEM_ICON[id]
+  const Icon = result.state === 'pass' ? CheckCircle2 : result.state === 'fail' ? XCircle : Circle
   return (
     // Both lists are focus targets (only one is shown at a time): UploadTab focuses the visible one.
     <li

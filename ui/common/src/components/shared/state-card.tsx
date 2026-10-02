@@ -3,7 +3,7 @@
  * then what to do about it. Never a bare "No items found". Feature code maps its errors onto these
  * (observability `ErrorState`, agents `ErrorNote`, TokenOps `ServerDown`); the look lives here once.
  */
-import { AlertTriangle, Info, ServerOff, type LucideIcon } from 'lucide-react'
+import { AlertTriangle, Info, ServerOff } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import {
@@ -11,7 +11,6 @@ import {
   EmptyContent,
   EmptyDescription,
   EmptyHeader,
-  EmptyMedia,
   EmptyTitle,
 } from '@/components/ui/empty'
 import { cn } from '@/lib/utils'
@@ -62,46 +61,25 @@ export function StateCard({
   )
 }
 
-/**
- * Nothing to show yet: the app's one empty screen, a dashed `Empty` with an optional icon, a title, one line on why
- * or what next, and an optional action. Pages pass `icon` (their nav icon, or what is missing) and a next step; a
- * section inside a panel uses `PanelEmpty` (no icon, compact). Filtered to nothing: say so and offer to clear.
- */
+/** Nothing to show yet: a dashed `Empty` with a title, an optional line and an optional action. */
 export function EmptyState({
-  icon: Icon,
   title,
   children,
   action,
   className,
 }: {
-  icon?: LucideIcon
   title: ReactNode
   children?: ReactNode
   action?: ReactNode
   className?: string
 }) {
   return (
-    <Empty
-      className={cn(
-        'gap-2 border border-border px-4 py-8 md:p-8',
-        Icon && 'gap-4 py-12 md:py-14',
-        className,
-      )}
-    >
+    <Empty className={cn('gap-2 border border-border px-4 py-8 md:p-8', className)}>
       <EmptyHeader className="gap-1">
-        {Icon ? (
-          <EmptyMedia variant="icon" className="mb-2 text-muted-foreground">
-            <Icon aria-hidden className="size-5" />
-          </EmptyMedia>
-        ) : null}
-        <EmptyTitle className={Icon ? 'text-base' : 'text-sm'}>{title}</EmptyTitle>
-        {children ? (
-          <EmptyDescription className={Icon ? 'text-sm' : 'text-xs'}>{children}</EmptyDescription>
-        ) : null}
+        <EmptyTitle className="text-sm">{title}</EmptyTitle>
+        {children ? <EmptyDescription className="text-xs">{children}</EmptyDescription> : null}
       </EmptyHeader>
-      {action ? (
-        <EmptyContent className="flex-row flex-wrap justify-center gap-2">{action}</EmptyContent>
-      ) : null}
+      {action ? <EmptyContent>{action}</EmptyContent> : null}
     </Empty>
   )
 }

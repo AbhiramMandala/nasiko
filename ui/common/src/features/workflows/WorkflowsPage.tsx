@@ -2,13 +2,12 @@
  * Deployed or draft workflows (plans/feat-workflows.md §2): sorted by the server, searched here. On `main` the rows
  * carry no metrics (W-3), so the metric chips, health, last-run line and sort are hidden, and Drafts is absent (W-1).
  */
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { EllipsisVertical, Plus, RotateCw, SearchX, Workflow } from 'lucide-react'
+import { EllipsisVertical, Plus, RotateCw } from 'lucide-react'
 import { memo, useDeferredValue, useState } from 'react'
 import { toast } from 'sonner'
 import { PageHeader } from '@/components/shared/page-header'
-import { PageLoader } from '@/components/shared/page-loader'
 import { SearchInput } from '@/components/shared/search-input'
 import { EmptyState, StateCard } from '@/components/shared/state-card'
 import { Button } from '@/components/ui/button'
@@ -26,12 +25,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Skeleton } from '@/components/ui/skeleton'
 import { relTime } from '@/features/agents/format'
 import { fmtLongDay, fmtPct, fmtTokens } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import { dropFromLists, workflowListQuery } from './api'
+import { dropFromLists, runWorkflow, workflowListQuery } from './api'
 import { HEALTH_LABEL, SORT_LABEL, copy, reason, type ListMode } from './copy'
-import { useStartRun } from './run'
 import {
   agentsOf,
   descriptionOf,
@@ -76,6 +75,7 @@ export function WorkflowsPage({
   setSearch: (patch: Partial<{ q: string; sort: string }>) => void
 }) {
   const text = copy.list[mode]
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const sort = search.sort ?? (mode === 'deployed' ? 'recent' : 'all')
   const list = useQuery(
@@ -87,7 +87,16 @@ export function WorkflowsPage({
   const q = useDeferredValue(term).trim().toLowerCase()
   const [deleting, setDeleting] = useState<WorkflowRow | null>(null)
 
-  const startRun = useStartRun()
+  const run = useMutation({
+    mutationFn: (id: string) => runWorkflow(id),
+    onSuccess: (r, id) =>
+      void navigate({
+        to: '/workflows/$workflowId',
+        params: { workflowId: id },
+        search: { run: r.execution_id },
+      }),
+    onError: (err) => toast.error(copy.runFailed(reason(err))),
+  })
 
   // The drafts endpoint also returns promoted drafts: each workflow shows in one list only.
   const rows = (list.data ?? []).filter((wf) => isDeployed(wf) === (mode === 'deployed'))
@@ -101,7 +110,7 @@ export function WorkflowsPage({
   const sortLabel = SORT_LABEL[mode] as Record<string, string>
 
   const create = (
-    <Button asChild size="sm" className="pointer-coarse:min-h-11">
+    <Button asChild>
       <Link to="/workflows/new">
         <Plus aria-hidden /> {copy.create}
       </Link>
@@ -128,14 +137,20 @@ export function WorkflowsPage({
         }
       />
     )
-  else if (list.isPending) body = <PageLoader label={text.loading} />
+  else if (list.isPending)
+    body = (
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" aria-busy="true">
+        {[0, 1, 2].map((i) => (
+          <Skeleton key={i} className="h-44" />
+        ))}
+      </div>
+    )
   else if (empty)
     body = (
       <EmptyState
-        icon={Workflow}
         title={text.empty}
         action={
-          <>
+          <div className="flex flex-wrap justify-center gap-2">
             <Button asChild variant="ghost">
               <Link to={mode === 'deployed' ? '/workflows/drafts' : '/workflows'}>
                 {text.other}
@@ -144,7 +159,7 @@ export function WorkflowsPage({
             <Button asChild variant="outline">
               <Link to="/workflows/new">{copy.create}</Link>
             </Button>
-          </>
+          </div>
         }
       >
         {text.emptyText}
@@ -153,7 +168,6 @@ export function WorkflowsPage({
   else if (!shown.length)
     body = (
       <EmptyState
-        icon={SearchX}
         title={copy.noMatch}
         action={
           <Button size="sm" variant="outline" onClick={() => setSearch({ q: undefined })}>
@@ -173,7 +187,8 @@ export function WorkflowsPage({
               wf={wf}
               mode={mode}
               metrics={metrics}
-              onRun={() => startRun(wf.id)}
+              running={run.isPending && run.variables === wf.id}
+              onRun={() => run.mutate(wf.id)}
               onDelete={() => setDeleting(wf)}
             />
           </li>
@@ -234,12 +249,14 @@ const WorkflowCard = memo(function WorkflowCard({
   wf,
   mode,
   metrics,
+  running,
   onRun,
   onDelete,
 }: {
   wf: WorkflowRow
   mode: ListMode
   metrics: boolean
+  running: boolean
   onRun: () => void
   onDelete: () => void
 }) {
@@ -292,7 +309,11 @@ const WorkflowCard = memo(function WorkflowCard({
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem onSelect={open}>{copy.open}</DropdownMenuItem>
-            {steps > 0 ? <DropdownMenuItem onSelect={onRun}>{copy.runNow}</DropdownMenuItem> : null}
+            {steps > 0 ? (
+              <DropdownMenuItem disabled={running} onSelect={onRun}>
+                {running ? copy.starting : copy.runNow}
+              </DropdownMenuItem>
+            ) : null}
             <DropdownMenuItem variant="destructive" onSelect={onDelete}>
               {copy.delete}
             </DropdownMenuItem>

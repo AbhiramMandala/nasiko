@@ -38,10 +38,7 @@ export function Headline({
   // On a phone the attention sentence wins; when it only says "nothing", the money sentence shows instead.
   const phoneShowsMoney = !attention || nothing
   return (
-    <p
-      className="max-w-[62ch] text-xl leading-8 text-pretty text-foreground"
-      data-testid="overview-headline"
-    >
+    <p className="max-w-3xl text-lg text-pretty text-foreground" data-testid="overview-headline">
       {!money && !attention ? (
         <span className="text-muted-foreground">{copy.headline.checking}</span>
       ) : null}

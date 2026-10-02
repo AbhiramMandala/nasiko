@@ -9,7 +9,7 @@ import { mostlyUnpriced } from '@/features/harnesses/rollup'
 import { sessionRows, useChatSessions } from '@/features/chat/api'
 import { useWaiting } from '@/features/chat/waiting'
 import { STATUS_CHECK_ROWS } from '@/features/observability/tuning'
-import { tempoSafeStart, useFleetSessions, useSessionStatuses } from '@/features/sessions/api'
+import { useFleetSessions, useSessionStatuses } from '@/features/sessions/api'
 import type { Me } from '@/lib/api/auth'
 import { useQueries } from '@tanstack/react-query'
 import { useCallback, useMemo } from 'react'
@@ -105,11 +105,8 @@ export function useFleetHealth(now: Date, enabled = true): FleetHealth {
   const prev = useDashboard(win7, {}, 'agent', 'previous', on)
   const d30 = useDashboard(win30, {}, 'agent', 'current', on)
   const ts = useTimeseries(win30, {}, on)
-  // Budgets hidden: no server support for /api/budgets yet (R-L10). Restore the commented lines when it lands.
-  // const budgets = useBudgets(on)
-  // const budgetsAbsent = isEndpointAbsent(budgets.error)
-  const budgets = useBudgets(false)
-  const budgetsAbsent = true
+  const budgets = useBudgets(on)
+  const budgetsAbsent = isEndpointAbsent(budgets.error)
   // Only once the list answered: on a server without budgets (bare 404) no status request goes out.
   const budgetStatus = useBudgetStatus(on && budgets.isSuccess)
   const deployedCount = useMemo(
@@ -413,15 +410,14 @@ export interface NeedsYou {
   /** The oldest answer among the sources that answered (design review 8A's "Checked …"), or 0. */
   lastChecked: number
   retry: Record<SourceId, () => void>
-  /** The newest sessions of the last 7 days and their checked status, shared with Recent sessions (eng review R7). */
+  /** The newest sessions of the last 24 h and their checked status, shared with Recent sessions (eng review R7). */
   sessions: ReturnType<typeof useRecentSessions>
 }
 
-/** The newest STATUS_CHECK_ROWS sessions of the last 7 days, status-checked with the Sessions page's keys (eng review R7). */
+/** The newest STATUS_CHECK_ROWS sessions of the last 24 h, status-checked with the Sessions page's keys (eng review R7). */
 function useRecentSessions(now: Date, enabled: boolean) {
-  const win = useMemo(() => resolveWindow({ preset: '7d' }, now), [now])
-  const start = useMemo(() => tempoSafeStart(win.start, now), [win.start, now])
-  const list = useFleetSessions(win.key, start, win.end, enabled)
+  const win = useMemo(() => resolveWindow({ preset: '24h' }, now), [now])
+  const list = useFleetSessions(win.key, win.start, win.end, enabled)
   const newest = useMemo(() => list.rows.slice(0, STATUS_CHECK_ROWS), [list.rows])
   const status = useSessionStatuses(newest, now.getTime(), false)
   return { list, newest, status }
@@ -432,11 +428,8 @@ export function useNeedsYou(now: Date, me: Me, fleet: FleetHealth, enabled = tru
   const chats = useChatSessions()
   // The fleet's directory, not a second observer: one enabled late would refetch a failed list and flicker it pending.
   const dir = { byId: fleet.byId }
-  // Budgets hidden: no server support for /api/budgets yet (R-L10). Restore the commented lines when it lands.
-  // const budgets = useBudgets(enabled)
-  // const budgetsAbsent = isEndpointAbsent(budgets.error)
-  const budgets = useBudgets(false)
-  const budgetsAbsent = true
+  const budgets = useBudgets(enabled)
+  const budgetsAbsent = isEndpointAbsent(budgets.error)
   const status = useBudgetStatus(enabled && budgets.isSuccess)
   const sessions = useRecentSessions(now, enabled)
   // Stable inputs for the memo below: query result objects are new on every render.

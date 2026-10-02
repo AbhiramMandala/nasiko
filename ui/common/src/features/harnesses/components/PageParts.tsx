@@ -7,12 +7,12 @@ import { AlertTriangle } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card } from '@/components/ui/card'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Toggle } from '@/components/ui/toggle'
 import { harnessNarrative } from '@/features/narrative/harness'
 import type { ResolvedWindow } from '@/features/tokenops/window'
 import { PageHeader } from '@/components/shared/page-header'
-import { PageLoader } from '@/components/shared/page-loader'
+import { Panel } from '@/components/shared/panel'
 import { StateCard } from '@/components/shared/state-card'
 import { TimeControl } from '@/components/shared/time-control'
 import { copy } from '../copy'
@@ -27,80 +27,39 @@ import { HarnessPanels, type PanelItem } from './HarnessPanels'
 import { ActivityStrip, ConnectPanel, SessionsList, TopModels } from './IndividualView'
 import { Trend } from './Trend'
 
-export function Summary({ sentences, callout }: { sentences: string[]; callout: string | null }) {
+export function Summary({
+  sentences,
+  callout,
+  loading,
+}: {
+  sentences: string[]
+  callout: string | null
+  loading: boolean
+}) {
   return (
     <section aria-labelledby="harness-summary" className="flex flex-col gap-2">
       <h2 id="harness-summary" className="sr-only">
         Summary
       </h2>
-      <div className="flex max-w-[70ch] flex-col items-start gap-2">
-        <p className="text-xl leading-8" data-testid="harness-summary">
-          {/* Money in bold, as in TokenOps' summary. */}
-          {sentences
-            .join(' ')
-            .split(/(\$[\d,]+(?:\.\d+)?)/)
-            .map((part, i) =>
-              i % 2 === 0 ? (
-                part
-              ) : (
-                // eslint-disable-next-line @eslint-react/no-array-index-key -- a piece of one split sentence: parts can repeat, position is identity
-                <strong key={i} className="font-semibold">
-                  {part}
-                </strong>
-              ),
-            )}
-        </p>
-        {callout ? (
-          <Badge variant="outline" className="text-xs">
-            {callout}
-          </Badge>
-        ) : null}
-      </div>
-    </section>
-  )
-}
-
-/** The summary as one card like TokenOps' SummaryHero: the window badge and narrative on the left, daily activity
- *  and top models on the right. Every full-form level uses it (Individual here, the EE org levels). */
-export function SummaryCard({
-  windowLabel,
-  compare,
-  sentences,
-  callout,
-  res,
-  days,
-}: {
-  windowLabel: string
-  compare: boolean
-  sentences: string[]
-  callout: string | null
-  res: Pick<UsageResponse, 'series' | 'by_harness'>
-  days: string[]
-}) {
-  return (
-    <Card className="gap-0 overflow-hidden p-0 lg:grid lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]">
-      <div className="flex flex-col gap-4 p-5">
-        <Badge variant="outline" className="border-primary/30 bg-primary/10 text-primary-text">
-          <span>{windowLabel}</span>
-          <span aria-hidden>·</span>
-          <span>{compare ? 'vs the period before' : 'Compare is off'}</span>
-        </Badge>
-        <Summary sentences={sentences} callout={callout} />
-      </div>
-      <section
-        aria-labelledby="activity-title"
-        className="flex min-w-0 flex-col gap-3 border-t border-border p-5 lg:border-t-0 lg:border-l"
-      >
-        <div>
-          <h2 id="activity-title" className="text-sm font-semibold">
-            Daily activity
-          </h2>
-          <p className="text-xs text-muted-foreground">Active days (UTC), shaded by est. cost</p>
+      {loading ? (
+        <div aria-busy="true" className="flex flex-col gap-2">
+          <span className="sr-only">Loading summary</span>
+          <Skeleton className="h-6 w-4/5" />
+          <Skeleton className="h-6 w-2/5" />
         </div>
-        <ActivityStrip series={res.series} days={days} />
-        <TopModels byHarness={res.by_harness} />
-      </section>
-    </Card>
+      ) : (
+        <div className="flex max-w-[70ch] flex-col items-start gap-2">
+          <p className="text-xl leading-7 font-medium" data-testid="harness-summary">
+            {sentences.join(' ')}
+          </p>
+          {callout ? (
+            <Badge variant="outline" className="text-xs">
+              {callout}
+            </Badge>
+          ) : null}
+        </div>
+      )}
+    </section>
   )
 }
 
@@ -212,12 +171,12 @@ export function ViewerError({ header, fix }: { header: ReactNode; fix: string })
   )
 }
 
-/** The level's first page hasn't answered: the header, then the one page loader. */
-export function LevelLoading({ header }: { header: ReactNode }) {
+export function LevelLoading({ header, compare }: { header: ReactNode; compare: boolean }) {
   return (
     <div className="flex flex-col gap-4">
       {header}
-      <PageLoader label={copy.loading} />
+      <Summary sentences={[]} callout={null} loading />
+      <HarnessPanels items={[]} compare={compare} onToggle={() => {}} loading />
     </div>
   )
 }
@@ -314,38 +273,41 @@ export function LiveFallbackLevel({
             </Button>
           }
         />
-      ) : !d ? (
-        <PageLoader label={copy.loading} />
       ) : (
         <>
-          <Summary sentences={sentences} callout={null} />
+          <Summary sentences={sentences} callout={null} loading={live.loading || !d} />
           <HarnessPanels
             items={items}
             compare={compare}
-            prevUnavailable={d.prevUnavailable}
+            prevUnavailable={d?.prevUnavailable}
             onToggle={onToggle}
             selected={selected}
             perHarnessUnpricedKnown={false}
             sessionsKnown={false}
             showTopModel={false}
+            loading={live.loading || !d}
           />
-          <p className="text-xs text-muted-foreground">{copy.removedHarnesses}</p>
-          <SessionsList
-            title={copy.lastSessions(LIVE_SESSION_LIMIT)}
-            note={copy.sessionsOwnOnly}
-            linkable={!preview}
-            items={d.sessions}
-            initial={RECENT_SESSIONS_SHOWN}
-            emptyText={copy.noRecentSessions}
-          />
-          <ConnectPanel unconnected={unconnected} self name={name ?? ''} server={serverOrigin} />
+          {d ? <p className="text-xs text-muted-foreground">{copy.removedHarnesses}</p> : null}
+          {d ? (
+            <SessionsList
+              title={copy.lastSessions(LIVE_SESSION_LIMIT)}
+              note={copy.sessionsOwnOnly}
+              linkable={!preview}
+              items={d.sessions}
+              initial={RECENT_SESSIONS_SHOWN}
+              emptyText={copy.noRecentSessions}
+            />
+          ) : null}
+          {d ? (
+            <ConnectPanel unconnected={unconnected} self name={name ?? ''} server={serverOrigin} />
+          ) : null}
         </>
       )}
     </div>
   )
 }
 
-/** The Individual level in full (usage endpoint): a summary card (narrative, daily strip + top models), cards, recent sessions, trend, connect help. */
+/** The Individual level in full (usage endpoint): cards, recent sessions, daily strip, top models, trend, connect help. */
 export function UserLevel({
   res,
   self,
@@ -380,17 +342,14 @@ export function UserLevel({
   )
   return (
     <>
-      <SummaryCard
-        windowLabel={win.label}
-        compare={compare}
+      <Summary
         sentences={harnessNarrative({
           windowLabel: win.label,
           res,
           individual: { self, name: res.scope.label },
         })}
         callout={null}
-        res={res}
-        days={days}
+        loading={false}
       />
       {/* HarnessPanels only shows a Δ with Compare on; while placeholder data shows, it is the old level's. */}
       <HarnessPanels
@@ -400,14 +359,26 @@ export function UserLevel({
         compare={compare}
         prevUnavailable={stale}
       />
-      {/* Mocked usage carries seed session ids the real Sessions page doesn't have. */}
-      <SessionsList
-        title="Recent sessions"
-        note={self || viewerIsSuperuser ? undefined : copy.sessionsOwnOnly}
-        linkable={!preview && (self || viewerIsSuperuser)}
-        items={res.recent_sessions ?? []}
-        initial={RECENT_SESSIONS_SHOWN}
-      />
+      <div className="grid items-start gap-4 lg:grid-cols-[1.15fr_1fr]">
+        {/* Mocked usage carries seed session ids the real Sessions page doesn't have. */}
+        <SessionsList
+          title="Recent sessions"
+          note={self || viewerIsSuperuser ? undefined : copy.sessionsOwnOnly}
+          linkable={!preview && (self || viewerIsSuperuser)}
+          items={res.recent_sessions ?? []}
+          initial={RECENT_SESSIONS_SHOWN}
+        />
+        <Panel
+          title="Daily activity"
+          subtitle="Active days (UTC), shaded by est. cost"
+          labelledBy="activity-title"
+        >
+          <div className="flex flex-col gap-3">
+            <ActivityStrip series={res.series} days={days} />
+            <TopModels byHarness={res.by_harness} />
+          </div>
+        </Panel>
+      </div>
       <Trend
         series={res.series}
         harnesses={harnesses}

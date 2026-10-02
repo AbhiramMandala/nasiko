@@ -4,7 +4,6 @@ import { AppShell } from '@/app/shell/AppShell'
 import { BuildToasts } from '@/features/deploy/components/BuildToasts'
 import { copy as deployCopy } from '@/features/deploy/copy'
 import { followedCount, subscribeFollower } from '@/features/deploy/follower'
-import { useGuideHiddenNav } from '@/features/onboarding/api'
 import { meQuery } from '@/lib/api/auth'
 import { ApiError } from '@/lib/api/client'
 import { isSignedOutLocally } from '@/lib/session'
@@ -41,14 +40,12 @@ export const Route = createFileRoute('/_app')({
 /** The shell plus the feature pieces it shows on every page (the shell itself never imports a feature). */
 function AppLayout() {
   const building = useSyncExternalStore(subscribeFollower, followedCount)
-  const hidden = useGuideHiddenNav()
   return (
     <AppShell
       end={<BuildToasts />}
-      hidden={hidden}
       badges={
         building
-          ? { '/agents': { count: building, label: deployCopy.toast.agentsBadge(building) } }
+          ? { '/builds': { count: building, label: deployCopy.toast.inProgress(building) } }
           : undefined
       }
     />

@@ -31,11 +31,7 @@ describe('landing', () => {
   it('the superuser lands on their own Individual view, with nothing about another edition', async () => {
     as('admin')
     renderApp('/harnesses')
-    // One page loader under the header until the landing answers, then the level.
-    await screen.findByRole('heading', { level: 1, name: 'Harnesses' })
-    expect(screen.getByTestId('page-loader')).toBeInTheDocument()
     expect(await summary()).toHaveTextContent(/you used/i)
-    expect(screen.queryByTestId('page-loader')).toBeNull()
     expect(screen.getByRole('heading', { name: 'Recent sessions' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Daily activity' })).toBeInTheDocument()
     expect(screen.queryByRole('table')).toBeNull()
@@ -383,7 +379,7 @@ describe('login clears cached data (ship review)', () => {
     const { queryClient } = renderApp('/login')
     queryClient.setQueryData(['harnesses', 'live', 'someone-else', 'agents'], [{ id: 'x' }])
     await user.type(await screen.findByLabelText(/username/i), 'admin')
-    await user.type(screen.getByLabelText('Password'), 'changeme')
+    await user.type(screen.getByLabelText(/password/i), 'changeme')
     await user.click(screen.getByRole('button', { name: /sign in|log in/i }))
     await waitFor(() =>
       expect(

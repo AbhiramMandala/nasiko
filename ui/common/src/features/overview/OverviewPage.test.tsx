@@ -32,7 +32,7 @@ const loaded = async () => {
     ).toHaveLength(4),
   )
   await waitFor(() =>
-    expect(within(card('overview-month')).getByTestId('overview-mtd')).toBeInTheDocument(),
+    expect(within(card('kpi-spend')).getByTestId('overview-mtd')).toBeInTheDocument(),
   )
 }
 
@@ -40,7 +40,7 @@ describe('Spend', () => {
   it('says fleet spend with the scope note, and never "You\'ve spent" (eng R2)', async () => {
     renderApp('/')
     await loaded()
-    expect(card('overview-month')).toHaveTextContent(copy.month.label)
+    expect(card('kpi-spend')).toHaveTextContent(copy.spend.fleetThisMonth)
     expect(card('overview-spend')).toHaveTextContent(copy.spend.scopeNote)
     expect(document.body).not.toHaveTextContent(/You've spent/i)
   })
@@ -77,7 +77,7 @@ describe('Spend', () => {
       ),
     )
     renderApp('/')
-    await within(await screen.findByTestId('overview-month')).findByText(
+    await within(await screen.findByTestId('kpi-spend')).findByText(
       copy.couldntCheck(copy.spend.what),
     )
     await waitFor(() =>
@@ -187,33 +187,7 @@ describe('Needs you', () => {
 })
 
 describe('first run (design 7A)', () => {
-  it('leads with the Setup guide card instead of the deploy card, and it reopens the guide', async () => {
-    server.use(http.get('*/api/agents', () => HttpResponse.json([])))
-    const user = userEvent.setup()
-    renderApp('/')
-    const guideCard = await screen.findByTestId('overview-setup-guide')
-    expect(document.querySelector('[data-testid="overview-first-run"]')).toBeNull()
-    // The seed user picked a role and has router configs, but no agents yet: the guide resumes at Bring an agent.
-    await user.click(within(guideCard).getByRole('button', { name: 'Resume guide' }))
-    expect(
-      await screen.findByRole('heading', { name: 'Bring your first agent' }),
-    ).toBeInTheDocument()
-  })
-
-  it('opens the guide from the header Setup guide', async () => {
-    const user = userEvent.setup()
-    renderApp('/')
-    const button = await screen.findByRole('button', { name: 'Setup guide' })
-    await waitFor(() => expect(button).toBeEnabled())
-    await user.click(button)
-    // A finished user with configs and agents reopens at Ready.
-    expect(
-      await screen.findByRole('dialog', { name: 'Your workspace is ready' }),
-    ).toBeInTheDocument()
-  })
-
-  it('shows the deploy card and fetches no finops or sessions with an empty fleet on an older server', async () => {
-    configureMocks({ variant: 'onboarding-absent' })
+  it('shows the deploy card and fetches no finops or sessions with an empty fleet', async () => {
     server.use(http.get('*/api/agents', () => HttpResponse.json([])))
     const rec = recordRequests()
     renderApp('/')
@@ -294,8 +268,7 @@ describe('Coding harnesses', () => {
 })
 
 describe('Budgets', () => {
-  // Budgets hidden (no server support for /api/budgets yet, R-L10): un-skip with the commented budget code.
-  it.skip('shows the card and Adjust budget when the server has budgets', async () => {
+  it('shows the card and Adjust budget when the server has budgets', async () => {
     renderApp('/')
     await loaded()
     expect(
@@ -325,7 +298,7 @@ describe('structure (design 14A)', () => {
     const ids = [
       'overview-needs',
       'overview-spend',
-      // 'overview-budget', // Budgets hidden: no server support yet (R-L10).
+      'overview-budget',
       'overview-health',
       'overview-sessions',
       'overview-chats',
@@ -341,21 +314,5 @@ describe('structure (design 14A)', () => {
       e.getAttribute('data-testid'),
     )
     expect(order).toEqual(ids)
-  })
-})
-
-describe('Loading', () => {
-  it('shows one page loader on a cold load, then the cards; a range change keeps the cards', async () => {
-    renderApp('/')
-    // The header is static, so it stays above the loader.
-    await screen.findByRole('heading', { level: 1, name: copy.title })
-    expect(screen.getByTestId('page-loader')).toBeInTheDocument()
-    expect(card('overview-needs')).toBeNull()
-    await loaded()
-    expect(screen.queryByTestId('page-loader')).toBeNull()
-    // A new range refetches the range's reads: the cards show their own loading, never the page loader again.
-    await userEvent.click(screen.getByRole('radio', { name: copy.range.item(90) }))
-    expect(screen.queryByTestId('page-loader')).toBeNull()
-    expect(card('overview-spend')).toBeInTheDocument()
   })
 })

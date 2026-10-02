@@ -13,9 +13,10 @@
  */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useRouter } from '@tanstack/react-router'
-import { AlertTriangle, DollarSign, Info, X } from 'lucide-react'
+import { AlertTriangle, Info, X } from 'lucide-react'
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -25,6 +26,7 @@ import {
   BreadcrumbSeparator,
 } from '@/components/ui/breadcrumb'
 import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
 import {
   Select,
   SelectContent,
@@ -48,7 +50,7 @@ import {
   useTopTraces,
   type Filters,
 } from './api'
-import { compareOn, withoutWindow } from '@/app/shell/context'
+import { compareOn, pickShared } from '@/app/shell/context'
 import { tokenopsNarrative } from '@/features/narrative/tokenops'
 import { buildAttribution } from './attribution'
 import { summarizeMonth } from './forecast'
@@ -69,8 +71,7 @@ import { KpiStrip } from './components/KpiStrip'
 import { MonthHero } from './components/MonthHero'
 import { PageHeader } from '@/components/shared/page-header'
 import { PanelError } from '@/components/shared/panel'
-import { PageLoader } from '@/components/shared/page-loader'
-import { EmptyState, StateCard } from '@/components/shared/state-card'
+import { StateCard } from '@/components/shared/state-card'
 import { SpendTimeline } from './components/SpendTimeline'
 import { SummaryHero } from './components/SummaryHero'
 import { TimeControl } from '@/components/shared/time-control'
@@ -180,17 +181,6 @@ export function TokenopsPage({
         : null,
     [calPending, calThis.data, calLast.data, now],
   )
-  // One page loader until the first paint's reads settle (data or error: a failed read renders its panel's error), in
-  // place of the panels' skeletons. Latched: a later window or filter change keeps the panels' own loading states.
-  const coldPending =
-    !me.isSuccess ||
-    dash.isPending ||
-    timeseries.isPending ||
-    calThis.isPending ||
-    calLast.isPending
-  const [painted, setPainted] = useState(false)
-  if (!painted && !coldPending) setPainted(true)
-  const showLoader = !painted && coldPending
 
   // Executive summary (plan: TokenOps summary first). Day buckets feed the spike clause.
   // Placeholder data (keepPreviousData) belongs to the previous filters: summarising it under
@@ -382,8 +372,8 @@ export function TokenopsPage({
   if (firstRun) return <FirstRun />
 
   return (
-    // The page's first load is the one page loader below the sticky bar (plan §8 Phase 9: one busy region).
-    <div className="flex flex-col gap-4">
+    // One busy region for the page's first load; the panels' skeletons are decorative (plan §8 Phase 9).
+    <div className="flex flex-col gap-4" aria-busy={dash.isPending || timeseries.isPending}>
       {/* Sticky bar: title, time control, filters, breadcrumb, freshness (A1). */}
       <div
         ref={stickyBar}
@@ -444,8 +434,7 @@ export function TokenopsPage({
         </div>
       </div>
 
-      {showLoader ? <PageLoader label="Loading TokenOps" /> : null}
-      {showLoader ? null : unknownAgent ? (
+      {unknownAgent ? (
         <Notice tone="warning">
           {unknownAgent}.{' '}
           <Button
@@ -458,7 +447,7 @@ export function TokenopsPage({
           </Button>
         </Notice>
       ) : null}
-      {!showLoader && me.data && !me.data.is_superuser ? (
+      {me.data && !me.data.is_superuser ? (
         <Notice tone="info">
           KPIs and the attribution table only include agents you can access. The calendar, timeline
           and day breakdown are fleet-wide because those server endpoints don't check agent access
@@ -468,7 +457,7 @@ export function TokenopsPage({
 
       {/* An unknown agent filter makes every query fail the same permanent way: the notice
           above says why and how to recover, so show nothing that offers a futile Retry. */}
-      {showLoader || unknownAgent ? null : (
+      {unknownAgent ? null : (
         <>
           <SummaryHero
             sentences={narrative?.sentences ?? []}
@@ -477,7 +466,7 @@ export function TokenopsPage({
               narrative?.spike ? (
                 <Link
                   to="/sessions"
-                  search={{ ...withoutWindow(search), day: narrative.spike.date, sort: 'cost' }}
+                  search={{ ...pickShared(search), day: narrative.spike.date, sort: 'cost' }}
                   className="font-medium text-primary-text underline-offset-4 hover:underline"
                 >
                   {children}
@@ -534,7 +523,7 @@ export function TokenopsPage({
                   sessionsLink={
                     <Link
                       to="/sessions"
-                      search={{ ...withoutWindow(search), day: search.day, sort: 'cost' }}
+                      search={{ ...pickShared(search), day: search.day, sort: 'cost' }}
                       className="text-sm font-medium text-primary-text underline-offset-4 hover:underline"
                     >
                       See sessions <span aria-hidden>→</span>
@@ -812,30 +801,29 @@ function Notice({ tone, children }: { tone: 'info' | 'warning'; children: React.
 
 function FirstRun() {
   return (
-    <div className="flex flex-col gap-4">
-      <PageHeader title="TokenOps" />
-      <EmptyState icon={DollarSign} title="No AI spend recorded yet">
+    <Card className="mx-auto max-w-xl gap-3 p-6">
+      <Badge variant="secondary" className="w-fit">
+        TokenOps
+      </Badge>
+      <h1 className="text-xl font-semibold">No AI spend recorded yet</h1>
+      <p className="text-sm text-muted-foreground">
         TokenOps reads spend from agent traces. Nothing has arrived in the last two months, which
         usually means the telemetry pipeline isn't connected yet.
-      </EmptyState>
-      <div className="mx-auto flex max-w-xl flex-col gap-3 text-sm text-muted-foreground">
-        <ol className="list-decimal pl-5">
-          <li>
-            Set <code>TEMPO_URL</code> and <code>LOKI_URL</code> on nasiko-server and run the OTel
-            collector.
-          </li>
-          <li>Deploy an agent and send it a few requests.</li>
-          <li>
-            Spend appears within a couple of minutes (the trace materializer runs every 120 s).
-          </li>
-        </ol>
-        <p className="text-xs">
-          Setup details: <code>oss/docs/BOOTSTRAP_AND_NETWORKING.md</code> in the nasiko repository
-          (collector, Tempo and Loki wiring). Developing locally? Run <code>npm run seed:live</code>{' '}
-          against your OSS stack, or use mock mode.
-        </p>
-      </div>
-    </div>
+      </p>
+      <ol className="list-decimal pl-5 text-sm text-muted-foreground">
+        <li>
+          Set <code>TEMPO_URL</code> and <code>LOKI_URL</code> on nasiko-server and run the OTel
+          collector.
+        </li>
+        <li>Deploy an agent and send it a few requests.</li>
+        <li>Spend appears within a couple of minutes (the trace materializer runs every 120 s).</li>
+      </ol>
+      <p className="text-xs text-muted-foreground">
+        Setup details: <code>oss/docs/BOOTSTRAP_AND_NETWORKING.md</code> in the nasiko repository
+        (collector, Tempo and Loki wiring). Developing locally? Run <code>npm run seed:live</code>{' '}
+        against your OSS stack, or use mock mode.
+      </p>
+    </Card>
   )
 }
 

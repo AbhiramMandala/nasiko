@@ -41,5 +41,5 @@ export const RECENT_SESSION_ROWS = 5
 export const CHECKED_TICK_MS = 30_000
 /** Returning to the page after this long refetches the inbox (design review 8A, the TokenOps rule). */
 export const RETURN_REFRESH_MS = 60_000
-/** Links to Sessions open on the Overview's own 7-day window: a 30-day window runs past Tempo's 7-day search limit (QA ISSUE-003). */
-export const LAST_WEEK = { preset: '7d' } as const
+/** Links to Sessions open on the Overview's own 24 h window: a 30-day window runs past Tempo's 7-day search limit (QA ISSUE-003). */
+export const LAST_DAY = { preset: '24h' } as const

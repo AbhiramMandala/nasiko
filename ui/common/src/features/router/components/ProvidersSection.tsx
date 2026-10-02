@@ -5,7 +5,6 @@
  */
 import { AlertTriangle, MoreHorizontal } from 'lucide-react'
 import { useState } from 'react'
-import { EmptyState } from '@/components/shared/state-card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -317,7 +316,7 @@ function Registry({ registry }: { registry: Q<ModelMapping[]> }) {
       <h3 className="text-sm font-medium">{copy.registryTitle}</h3>
       <p className="text-xs text-muted-foreground">{copy.registryWayOut}</p>
       {rows.length === 0 ? (
-        <EmptyState className="mt-2" title={copy.registryEmpty} />
+        <p className="mt-2 text-xs text-muted-foreground">{copy.registryEmpty}</p>
       ) : (
         <Table className="mt-2 text-xs">
           <TableHeader>

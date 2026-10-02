@@ -1,16 +1,5 @@
 import { clsx, type ClassValue } from 'clsx'
-import { extendTailwindMerge } from 'tailwind-merge'
-
-/** tailwind-merge only knows Tailwind's default scales: without our `@theme` names (index.css), `max-w-sheet` lost to
- *  the sheet primitive's `sm:max-w-sm`, and `text-code` / `text-lead` read as colours and dropped beside one. */
-const twMerge = extendTailwindMerge({
-  extend: {
-    theme: {
-      container: ['page', 'sheet', 'sheet-sm', 'sheet-lg'],
-      text: ['code', 'lead'],
-    },
-  },
-})
+import { twMerge } from 'tailwind-merge'
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))

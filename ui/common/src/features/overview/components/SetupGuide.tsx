@@ -1,5 +1,5 @@
 /**
- * The header's Setup guide: the onboarding guide where the server has it, else the first-run steps in a sheet, so they stay one click away after the first agent (the
+ * The header's Setup guide: the first-run steps in a sheet, so they stay one click away after the first agent (the
  * first-run card shows them inline only while there are none). Deploy an agent first, the CLI steps as the alternative.
  */
 import { BookOpen } from 'lucide-react'
@@ -13,17 +13,12 @@ import {
   SheetTrigger,
 } from '@/components/ui/sheet'
 import { FirstRunSteps } from '@/features/agents/components/bits'
-import { useGuide } from '@/features/onboarding/api'
-import { SetupGuideButton } from '@/features/onboarding/GuideCard'
 import { DeployAgentButton } from '@/features/deploy/components/DeployAgentButton'
 import { copy as deployCopy } from '@/features/deploy/copy'
 import { copy } from '../copy'
 import { TOUCH } from './Card'
 
 export function SetupGuide() {
-  // A server with the onboarding endpoint reopens the guide itself (spec §4); an older one keeps this sheet.
-  const { absent } = useGuide()
-  if (!absent) return <SetupGuideButton className={TOUCH} />
   return (
     <Sheet>
       <SheetTrigger asChild>

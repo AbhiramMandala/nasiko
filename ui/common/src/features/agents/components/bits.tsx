@@ -12,7 +12,6 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { CopyButton } from '@/components/shared/copy-button'
 import { Panel } from '@/components/shared/panel'
-import { SectionNav } from '@/components/shared/section-nav'
 import { cn } from '@/lib/utils'
 import { firstRunCommands } from '../format'
 import { copy, DOCS, errorCopy, type ErrorContext } from '../copy'
@@ -246,15 +245,4 @@ export function TryItLink({
       </Link>
     </Button>
   )
-}
-
-const SECTIONS = [
-  { to: '/agents', label: copy.sections.all },
-  { to: '/agents/mine', label: copy.sections.mine },
-  { to: '/builds', label: copy.sections.builds },
-] as const
-
-/** All agents · Your agents · Builds (the Builds page uses it too); "Deploy an agent" stays the header's action. */
-export function AgentsNav({ current }: { current: (typeof SECTIONS)[number]['to'] }) {
-  return <SectionNav label={copy.sections.label} sections={SECTIONS} current={current} />
 }

@@ -17,10 +17,9 @@ import { setupPinnedSeed } from '@/test/pinnedSeed'
 import { renderApp } from '@/test/renderApp'
 import { recordRequests, server } from '@/test/setup'
 import { SIGNED_OUT_KEY } from '@/lib/session'
-import { copy } from './copy'
 import { NAV_ITEMS } from './nav'
 import { LOGOUT_TIMEOUT_MS, signOut } from './signOut'
-import { readPrefs, resetThemeState, setAccent, setTheme } from './theme'
+import { readPrefs, resetThemeState, setAccent } from './theme'
 
 setupPinnedSeed()
 
@@ -28,10 +27,11 @@ const nav = () => screen.getByRole('navigation', { name: 'Main' })
 const navLink = (name: string) => within(nav()).getByRole('link', { name })
 const sidebarState = () =>
   document.querySelector('[data-slot="sidebar"]')?.getAttribute('data-state')
-const sidebar = () => document.querySelector<HTMLElement>('[data-slot="sidebar"]')!
-/** The open sidebar's brand link (the phone top bar has one too; the rail's mark is the Expand button). */
-const sidebarBrand = () => within(sidebar()).getByRole('link', { name: copy.brand })
-const wide = () => Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
+/** The header's Nasiko link (the phone top bar has one too). */
+const sidebarBrand = () =>
+  within(document.querySelector<HTMLElement>('[data-slot="sidebar"]')!).getByRole('link', {
+    name: 'Nasiko',
+  })
 const clearCookie = () => {
   document.cookie = 'sidebar_state=; path=/; max-age=0'
 }
@@ -67,8 +67,6 @@ describe('sidebar items', () => {
     ['/harnesses', 'Harnesses'],
     ['/agents', 'Agents'],
     ['/agents/mine', 'Agents'],
-    ['/deploy', 'Agents'],
-    ['/builds', 'Agents'],
     ['/chat', 'Chat'],
     ['/', 'Overview'],
   ])('marks %s as %s with aria-current', async (url, label) => {
@@ -84,16 +82,13 @@ describe('sidebar items', () => {
     expect(navLink(label).closest('[data-active]')).toHaveAttribute('data-active', 'true')
   })
 
-  it('carries the shared window to Harnesses only; Sessions and TokenOps start on their own', async () => {
-    renderApp('/tokenops?preset=24h&compare=0')
+  it('carries the shared window between Sessions, TokenOps and Harnesses only', async () => {
+    renderApp('/tokenops?preset=7d')
     await screen.findByRole('navigation', { name: 'Main' })
     await waitFor(() =>
-      expect(navLink('Harnesses')).toHaveAttribute('href', expect.stringContaining('preset=24h')),
+      expect(navLink('Sessions')).toHaveAttribute('href', expect.stringContaining('preset=7d')),
     )
-    // The other shared keys still cross into Sessions and TokenOps; the window doesn't.
-    expect(navLink('Sessions').getAttribute('href')).toContain('compare=false')
-    expect(navLink('Sessions').getAttribute('href')).not.toContain('preset')
-    expect(navLink('TokenOps').getAttribute('href')).not.toContain('preset')
+    expect(navLink('Harnesses').getAttribute('href')).toContain('preset=7d')
     expect(navLink('Chat').getAttribute('href')).toBe('/chat')
     expect(navLink('Agents').getAttribute('href')).toBe('/agents')
   })
@@ -103,19 +98,21 @@ describe('sidebar items', () => {
     await screen.findByRole('navigation', { name: 'Main' })
     await userEvent.click(navLink('TokenOps'))
     await waitFor(() => expect(router.state.location.pathname).toBe('/tokenops'))
-    // TokenOps opens on its own 30 days, not Sessions' window.
-    expect(router.state.location.search).toMatchObject({ preset: '30d' })
+    expect(router.state.location.search).toMatchObject({ preset: '7d' })
     expect(router.state.location.search).not.toHaveProperty('day')
     await userEvent.click(navLink('Harnesses'))
     await waitFor(() => expect(router.state.location.pathname).toBe('/harnesses'))
-    expect(router.state.location.search).toMatchObject({ preset: '30d' })
+    expect(router.state.location.search).toMatchObject({ preset: '7d' })
   })
 
   it('shows a way back into the app on an unknown URL', async () => {
     renderApp('/no-such-page')
     await screen.findByRole('heading', { name: 'Page not found' })
-    expect(screen.getByRole('link', { name: 'Back to Overview' })).toHaveAttribute('href', '/')
     expect(screen.getByRole('link', { name: 'Go to Chat' })).toHaveAttribute('href', '/chat')
+    expect(screen.getByRole('link', { name: 'Go to TokenOps' })).toHaveAttribute(
+      'href',
+      expect.stringContaining('/tokenops'),
+    )
   })
 
   it('has no Weave fixture gallery: Weave is EE only', async () => {
@@ -157,21 +154,18 @@ describe('sidebar items', () => {
   })
 })
 
-describe('header brand link', () => {
-  it('goes to the Overview through the router without marking itself current', async () => {
-    wide()
+describe('Nasiko header link', () => {
+  it('goes to Chat through the router without marking itself current', async () => {
     const { router } = renderApp('/agents')
     await screen.findByRole('navigation', { name: 'Main' })
     const brand = sidebarBrand()
-    expect(brand).toHaveAttribute('href', '/')
+    expect(brand).toHaveAttribute('href', '/chat')
     await userEvent.click(brand)
-    await waitFor(() => expect(router.state.location.pathname).toBe('/'))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/chat'))
     expect(brand).not.toHaveAttribute('aria-current')
-    expect(navLink('Overview')).toHaveAttribute('aria-current', 'page')
   })
 
   it('leaves a modified click (new tab) to the browser', async () => {
-    wide()
     const { router } = renderApp('/agents')
     await screen.findByRole('navigation', { name: 'Main' })
     const brand = sidebarBrand()
@@ -179,23 +173,6 @@ describe('header brand link', () => {
     expect(fireEvent.click(brand, { ctrlKey: true })).toBe(true)
     expect(fireEvent.click(brand, { metaKey: true })).toBe(true)
     expect(router.state.location.pathname).toBe('/agents')
-  })
-
-  it('is the Expand button in the rail: the mark turns into the expand icon on hover, and a click expands', async () => {
-    renderApp('/agents')
-    await screen.findByRole('navigation', { name: 'Main' })
-    expect(sidebarState()).toBe('collapsed')
-    const header = document.querySelector<HTMLElement>('[data-slot="sidebar-header"]')!
-    // One control, no second row: no brand link and no separate button beside it.
-    expect(within(header).queryByRole('link')).toBeNull()
-    const expand = within(header).getByRole('button')
-    expect(expand).toHaveAccessibleName('Expand')
-    expect(expand).toHaveAttribute('aria-keyshortcuts')
-    expect(expand).toHaveClass('group/expand')
-    await userEvent.click(expand)
-    expect(sidebarState()).toBe('expanded')
-    expect(sidebarBrand()).toBeInTheDocument()
-    expect(within(header).getByRole('button', { name: 'Collapse' })).toBeInTheDocument()
   })
 })
 
@@ -417,166 +394,30 @@ describe('status row: checking', () => {
   })
 })
 
-describe('footer', () => {
-  it('has the account and no Settings or Theme row (Settings opens from the account menu)', async () => {
+describe('theme menu', () => {
+  it('has named Mode and Theme radio groups whose items report their state', async () => {
     renderApp('/agents')
-    await screen.findByRole('navigation', { name: 'Main' })
-    expect(within(sidebar()).queryByRole('link', { name: 'Settings' })).toBeNull()
-    expect(within(sidebar()).queryByRole('button', { name: 'Theme' })).toBeNull()
-  })
-
-  it('the account menu has Theme, Settings and Sign out', async () => {
-    const { router } = renderApp('/agents')
-    await openAccountMenu()
-    expect((await screen.findAllByRole('menuitem')).map((i) => i.textContent?.trim())).toEqual([
-      'Theme',
-      'Settings',
-      'Sign out',
-    ])
-    await userEvent.click(screen.getByRole('menuitem', { name: 'Settings' }))
-    await waitFor(() => expect(router.state.location.pathname).toBe('/settings'))
-  })
-
-  it('the account menu’s Theme submenu sets mode and colour theme, and stays open between picks', async () => {
-    renderApp('/agents')
-    await openAccountMenu()
-    await userEvent.click(await screen.findByRole('menuitem', { name: 'Theme' }))
-    const mode = await screen.findByRole('group', { name: 'Mode' })
-    const theme = screen.getByRole('group', { name: 'Theme' })
-    expect(within(theme).getByRole('menuitemradio', { name: 'Carbon' })).toBeChecked()
-    await userEvent.click(within(theme).getByRole('menuitemradio', { name: 'Plum' }))
-    expect(document.documentElement).toHaveAttribute('data-theme', 'plum')
-    expect(readPrefs().accent).toBe('plum')
-    await userEvent.click(within(mode).getByRole('menuitemradio', { name: 'Dark' }))
-    expect(document.documentElement).toHaveClass('dark')
-    // resetThemeState rehydrates from this test's storage, which now holds these picks.
-    setAccent('carbon')
-    setTheme('system')
-  })
-
-  it('Settings → Appearance: its Mode and Theme radio groups set the theme', async () => {
-    renderApp('/settings/appearance')
-    const mode = await screen.findByRole('radiogroup', { name: 'Mode' })
-    const theme = screen.getByRole('radiogroup', { name: 'Theme' })
-    expect(
-      within(mode)
-        .getAllByRole('radio')
-        .map((r) => r.closest('label')?.textContent),
-    ).toEqual(['System', 'Light', 'Dark'])
+    await userEvent.click(await screen.findByRole('button', { name: 'Theme' }))
+    const theme = await screen.findByRole('group', { name: 'Mode' })
+    const accent = screen.getByRole('group', { name: 'Theme' })
     expect(
       within(theme)
-        .getAllByRole('radio')
-        .map((r) => r.closest('label')?.textContent),
+        .getAllByRole('menuitemradio')
+        .map((i) => i.textContent),
+    ).toEqual(['System', 'Light', 'Dark'])
+    expect(
+      within(accent)
+        .getAllByRole('menuitemradio')
+        .map((i) => i.textContent),
     ).toEqual(['Teal', 'Indigo', 'Plum', 'Carbon'])
-    expect(within(theme).getByRole('radio', { name: 'Carbon' })).toBeChecked()
-    await userEvent.click(within(theme).getByRole('radio', { name: 'Plum' }))
-    expect(within(theme).getByRole('radio', { name: 'Plum' })).toBeChecked()
+    const plum = within(accent).getByRole('menuitemradio', { name: 'Plum' })
+    expect(within(accent).getByRole('menuitemradio', { name: 'Teal' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+    await userEvent.click(plum)
+    expect(plum).toHaveAttribute('aria-checked', 'true')
     expect(document.documentElement).toHaveAttribute('data-theme', 'plum')
-    expect(readPrefs().accent).toBe('plum')
-    await userEvent.click(within(mode).getByRole('radio', { name: 'Dark' }))
-    expect(document.documentElement).toHaveClass('dark')
-  })
-})
-
-describe('drill-in panel (one sidebar on Chat and Settings)', () => {
-  it('shows Settings sections in the expanded sidebar instead of the app nav, and none beside the page', async () => {
-    wide()
-    renderApp('/settings')
-    const sections = await screen.findByRole('navigation', { name: 'Settings sections' })
-    expect(sidebar()).toContainElement(sections)
-    expect(screen.getAllByRole('navigation', { name: 'Settings sections' })).toHaveLength(1)
-    expect(screen.queryByRole('navigation', { name: 'Main' })).toBeNull()
-    expect(within(sections).getByRole('link', { name: 'General' })).toHaveAttribute(
-      'aria-current',
-      'page',
-    )
-  })
-
-  it('keeps the app nav in the collapsed rail; the page shows its sections itself', async () => {
-    renderApp('/settings')
-    const sections = await screen.findByRole('navigation', { name: 'Settings sections' })
-    expect(sidebarState()).toBe('collapsed')
-    expect(sidebar()).not.toContainElement(sections)
-    expect(nav()).toBeInTheDocument()
-  })
-
-  it('Main menu shows the app nav over the panel, focused on the current item; that item brings the panel back', async () => {
-    wide()
-    renderApp('/chat')
-    await userEvent.click(await screen.findByRole('button', { name: 'Back to main menu' }))
-    // Gone from the sidebar, and not back beside the page either: the sidebar still holds the panel (hidden).
-    expect(screen.queryByRole('link', { name: 'New chat' })).toBeNull()
-    await waitFor(() => expect(document.activeElement).toBe(navLink('Chat')))
-    expect(navLink('Chat')).toHaveAttribute('aria-current', 'page')
-    await userEvent.click(navLink('Chat'))
-    expect(await within(sidebar()).findByRole('link', { name: 'New chat' })).toBeInTheDocument()
-    await waitFor(() =>
-      expect(document.activeElement).toBe(
-        within(sidebar()).getByRole('button', { name: 'Back to main menu' }),
-      ),
-    )
-  })
-
-  it('shows no Settings sections beside the page under Main menu; the account menu’s Settings brings them back', async () => {
-    wide()
-    renderApp('/settings')
-    await userEvent.click(await screen.findByRole('button', { name: 'Back to main menu' }))
-    expect(await screen.findByRole('navigation', { name: 'Main' })).toBeInTheDocument()
-    expect(screen.queryByRole('navigation', { name: 'Settings sections' })).toBeNull()
-    expect(screen.getByRole('heading', { level: 1, name: 'General' })).toBeInTheDocument()
-    // The account menu's Settings brings the sections back, as the current nav item does for Chat.
-    await openAccountMenu()
-    await userEvent.click(await screen.findByRole('menuitem', { name: 'Settings' }))
-    const sections = await screen.findByRole('navigation', { name: 'Settings sections' })
-    expect(sidebar()).toContainElement(sections)
-    await waitFor(() =>
-      expect(document.activeElement).toBe(
-        within(sidebar()).getByRole('button', { name: 'Back to main menu' }),
-      ),
-    )
-  })
-
-  it('Back returns to the page the user came from, with its search, past moves inside the module', async () => {
-    wide()
-    const { router } = renderApp('/tokenops?preset=7d')
-    await screen.findByRole('navigation', { name: 'Main' })
-    await router.navigate({ to: '/chat' })
-    await router.navigate({ to: '/settings' })
-    await router.navigate({ to: '/settings/secrets' })
-    // Settings → Secrets is a move inside Settings: Back skips it, and Chat is the page before Settings.
-    const back = await screen.findByRole('button', { name: 'Back to Chat' })
-    // It reads just "Back"; the name and tooltip say where to.
-    expect(back).toHaveTextContent(/^Back$/)
-    expect(back).toHaveAttribute('title', 'Back to Chat')
-    await userEvent.click(back)
-    await waitFor(() => expect(router.state.location.pathname).toBe('/chat'))
-    await userEvent.click(await screen.findByRole('button', { name: 'Back to TokenOps' }))
-    await waitFor(() => expect(router.state.location.pathname).toBe('/tokenops'))
-    expect(router.state.location.search).toMatchObject({ preset: '7d' })
-    await waitFor(() => expect(document.activeElement).toBe(navLink('TokenOps')))
-  })
-
-  it('leaves the panel for the app nav on a page without one', async () => {
-    wide()
-    const { router } = renderApp('/settings')
-    await screen.findByRole('navigation', { name: 'Settings sections' })
-    await router.navigate({ to: '/agents' })
-    expect(await screen.findByRole('navigation', { name: 'Main' })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Back to main menu' })).toBeNull()
-  })
-
-  it('carries the chat history into the phone sheet', async () => {
-    vi.stubGlobal('matchMedia', (q: string) => ({
-      matches: q === '(max-width: 767px)',
-      media: q,
-      addEventListener: () => {},
-      removeEventListener: () => {},
-    }))
-    renderApp('/chat')
-    await userEvent.click(await screen.findByRole('button', { name: 'Open navigation' }))
-    const sheet = await screen.findByRole('dialog')
-    expect(await within(sheet).findByRole('link', { name: 'New chat' })).toBeInTheDocument()
-    expect(within(sheet).getByRole('button', { name: 'Back to main menu' })).toBeInTheDocument()
   })
 })
 
@@ -664,7 +505,7 @@ describe('sign out (eng D6)', () => {
       expect(reqs.urls.filter((u) => u.pathname === '/api/auth/logout')).toHaveLength(1)
       // The sign-in screen shows Carbon (theme.ts LOGIN_ACCENT); the stored choice is kept for after sign-in.
       await waitFor(() => expect(document.documentElement).toHaveAttribute('data-theme', 'carbon'))
-      expect(readPrefs().accent === 'plum' || readPrefs().accent === 'carbon').toBe(true)
+      expect(readPrefs().accent === 'plum' || readPrefs().accent === 'teal').toBe(true)
     } finally {
       reqs.stop()
     }
@@ -705,7 +546,7 @@ describe('sign out (eng D6)', () => {
       expect(router.state.location.search).not.toHaveProperty('expired')
       // Signing straight back in is never followed by another logout.
       await userEvent.click(await screen.findByRole('button', { name: 'Sign in' }))
-      await waitFor(() => expect(router.state.location.pathname).toBe('/'))
+      await waitFor(() => expect(router.state.location.pathname).toBe('/tokenops'))
       expect(reqs.urls.filter((u) => u.pathname === '/api/auth/logout')).toHaveLength(1)
     } finally {
       reqs.stop()

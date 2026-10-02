@@ -7,10 +7,9 @@
  * From Axiom's trace view: each bar carries its duration, the time axis repeats at the
  * bottom, and spans outside a "Filter spans" query are dimmed (the tree stays intact).
  */
-import { AlertCircle, ChevronRight, Coins } from 'lucide-react'
+import { AlertCircle, ChevronRight } from 'lucide-react'
 import { useEffect, useMemo, useRef, type KeyboardEvent } from 'react'
 import { DataTable, type DataTableColumn } from '@/components/shared/data-table'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { copy } from '@/features/observability/copy'
 import {
@@ -75,7 +74,6 @@ export function Legend() {
         <AlertCircle className="size-3 text-destructive" aria-hidden /> Error
       </span>
       <span className="inline-flex items-center gap-1.5">
-        <Coins className="size-3" aria-hidden />
         <span className="h-1 w-4 rounded-full bg-foreground/70" aria-hidden /> Tokens
       </span>
     </div>
@@ -268,13 +266,9 @@ export function Waterfall({
                     r.span.node.name
                   )}
                 </span>
-                {/* Beside the name, with an icon, so the count reads as this span's tokens. */}
-                {tokens ? (
-                  <span className="inline-flex shrink-0 items-center gap-0.5 pl-1.5 text-xs text-muted-foreground tabular-nums">
-                    <Coins className="size-3" aria-hidden />
-                    {fmtTokens(tokens)}
-                  </span>
-                ) : null}
+                <span className="ml-auto shrink-0 pl-2 text-xs text-muted-foreground tabular-nums">
+                  {tokens ? fmtTokens(tokens) : ''}
+                </span>
               </span>
               <span className="relative h-5">
                 <span
@@ -328,8 +322,6 @@ export function Waterfall({
   )
 }
 
-const STATUS_BADGE = { ok: 'success', error: 'destructive', unset: 'muted' } as const
-
 const tableColumns = (
   selectedId: string | undefined,
   onSelect: (s: FlatSpan) => void,
@@ -349,17 +341,7 @@ const tableColumns = (
       </Button>
     ),
   },
-  {
-    id: 'kind',
-    header: 'Kind',
-    // The waterfall's swatch, so the two views read alike.
-    cell: ({ row }) => (
-      <span className="inline-flex items-center gap-1.5">
-        <span className={cn('h-2.5 w-4 rounded-sm', CLASS_COLOR[row.original.cls])} aria-hidden />
-        {CLASS_LABEL[row.original.cls]}
-      </span>
-    ),
-  },
+  { id: 'kind', header: 'Kind', cell: ({ row }) => CLASS_LABEL[row.original.cls] },
   {
     id: 'start',
     header: 'Start',
@@ -381,16 +363,11 @@ const tableColumns = (
   {
     id: 'status',
     header: 'Status',
-    // Status badges as on Builds and Agents: a tint plus the word, never colour alone.
-    cell: ({ row }) => {
-      const status = statusText(row.original.node)
-      return (
-        <Badge variant={STATUS_BADGE[status]}>
-          {status === 'error' ? <AlertCircle aria-hidden /> : null}
-          {status}
-        </Badge>
-      )
-    },
+    cell: ({ row }) => (
+      <span className={isError(row.original.node) ? 'text-destructive' : ''}>
+        {statusText(row.original.node)}
+      </span>
+    ),
   },
 ]
 

@@ -6,14 +6,13 @@
  * focus moves to the next row, or to the view control.
  */
 import { Link } from '@tanstack/react-router'
-import { Hourglass, RotateCw, SearchX } from 'lucide-react'
+import { RotateCw } from 'lucide-react'
 import { useEffect, useRef } from 'react'
-import { EmptyState } from '@/components/shared/state-card'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { relTime } from '@/features/agents/format'
 import { ApiError } from '@/lib/api/client'
-import { RAIL_EMPTY, RAIL_ROW } from './turnStyles'
+import { cn } from '@/lib/utils'
 import { copy, errorCopy } from '../copy'
 import { requestPreview } from '../pending'
 import type { ChatCarry } from '../search'
@@ -108,19 +107,13 @@ export function WaitingList({
         </p>
       ) : null}
       {!rows.length ? (
-        <EmptyState icon={Hourglass} title={copy.noWaiting} className={RAIL_EMPTY}>
-          {copy.noWaitingHint}
-        </EmptyState>
+        <p className="px-2 py-3 text-sm text-muted-foreground">{copy.noWaiting}</p>
       ) : !shown.length ? (
-        <EmptyState
-          icon={SearchX}
-          title={copy.noWaitingMatch(filter.trim())}
-          className={RAIL_EMPTY}
-        >
-          {copy.noMatchHint}
-        </EmptyState>
+        <p className="px-2 py-3 text-sm text-muted-foreground">
+          {copy.noWaitingMatch(filter.trim())}
+        </p>
       ) : (
-        <ul className="space-y-0.5" aria-label={copy.viewWaiting}>
+        <ul className="space-y-1" aria-label={copy.viewWaiting}>
           {shown.map((r, i) => {
             const first = r.requests[0]
             return (
@@ -142,7 +135,9 @@ export function WaitingList({
                     if (focused.current?.id === r.sessionId) focused.current = null
                   }}
                   data-testid="waiting-row"
-                  className={RAIL_ROW}
+                  className={cn(
+                    'flex min-h-11 items-center gap-2 rounded-md border border-border bg-card px-2 py-1.5 outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+                  )}
                 >
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm">{r.title}</span>

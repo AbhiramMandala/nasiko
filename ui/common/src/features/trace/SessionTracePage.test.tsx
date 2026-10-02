@@ -1,18 +1,11 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { http, HttpResponse } from 'msw'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { copy } from '@/features/observability/copy'
 import { configureMocks } from '@/mocks/handlers'
-import {
-  generateSpans,
-  observabilityData,
-  sessionDetail,
-  SHOWCASE_SESSION,
-} from '@/mocks/observability'
+import { generateSpans, observabilityData, SHOWCASE_SESSION } from '@/mocks/observability'
 import { seed, setupPinnedSeed } from '@/test/pinnedSeed'
 import { renderApp } from '@/test/renderApp'
-import { server } from '@/test/setup'
 
 setupPinnedSeed()
 afterEach(() => configureMocks({ variant: null }))
@@ -164,22 +157,6 @@ describe('Session trace', () => {
     renderApp(`/sessions/${SHOWCASE_SESSION}`)
     expect(await screen.findByText(copy.notConfigured)).toBeInTheDocument()
     expect(screen.getByText(copy.notConfiguredFix)).toBeInTheDocument()
-  })
-
-  it('loads behind the page loader, and a session without traces says so', async () => {
-    const s = data.byId.get(SHOWCASE_SESSION)!
-    server.use(
-      http.get('/api/observability/session/:sessionId', () =>
-        HttpResponse.json({
-          data: { session: { ...sessionDetail(seed, s), traces: [], num_traces: 0 } },
-        }),
-      ),
-    )
-    renderApp(`/sessions/${SHOWCASE_SESSION}`)
-    expect(await screen.findByTestId('page-loader')).toBeInTheDocument()
-    expect(await screen.findByText(copy.noTraces)).toBeInTheDocument()
-    expect(screen.getByText(copy.noTracesBody)).toBeInTheDocument()
-    expect(screen.queryByTestId('page-loader')).toBeNull()
   })
 
   it('states: trace store error (500) offers Retry', async () => {

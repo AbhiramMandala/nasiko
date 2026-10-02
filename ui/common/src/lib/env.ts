@@ -29,7 +29,6 @@ export const MOCKABLE = [
   'settings',
   'mcp',
   'workflows',
-  'onboarding',
 ] as const
 export type Mockable = (typeof MOCKABLE)[number]
 

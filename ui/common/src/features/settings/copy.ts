@@ -11,61 +11,14 @@ export const copy = {
     label: 'Settings sections',
     workspace: 'Workspace',
     security: 'Security',
-    account: 'Account',
   },
   save: 'Save changes',
   saving: 'Saving…',
-  unsaved: 'Unsaved changes',
   saved: 'Settings saved',
   saveFailed: (reason: string) => `Could not save settings: ${reason}`,
   loadWhat: 'settings',
-  loading: 'Loading settings',
   required: 'Enter a value.',
   positiveInt: 'Enter a whole number of 1 or more.',
-
-  // Settings → Account → Appearance (/settings/appearance): every user, stored in this browser only (theme.ts).
-  appearance: {
-    label: 'Appearance',
-    sub: 'How Nasiko looks in this browser.',
-    mode: 'Mode',
-    modeHint: 'System follows your device’s light or dark setting.',
-    theme: 'Theme',
-    themeHint: 'The colour of buttons, links and the current page. Sign in always uses Carbon.',
-  },
-
-  // Settings → Account → Password (/settings/password), worded as nasiko-cloud-rs `43833316`
-  // ui/common/features/change-password-modal.js.
-  password: {
-    label: 'Password',
-    sub: 'The password you sign in with. Changing it signs out your other sessions.',
-    current: 'Current password',
-    currentPlaceholder: 'the password you sign in with now',
-    next: 'New password',
-    nextPlaceholder: 'a new, unused password',
-    confirm: 'Confirm new password',
-    confirmPlaceholder: 'retype the new password',
-    show: (field: string) => `Show ${field.toLowerCase()}`,
-    policy: (min: number, max: number) =>
-      `${min}-${max} characters, with an uppercase letter, a lowercase letter, a digit and a symbol.`,
-    submit: 'Change password',
-    submitting: 'Changing…',
-    currentRequired: 'Enter your current password',
-    nextRequired: 'Enter a new password',
-    problem: {
-      bytes: 'Password must be at most 72 bytes',
-      short: (min: number) => `Password must be at least ${min} characters`,
-      long: (max: number) => `Password must be at most ${max} characters`,
-      lowercase: 'Password must contain a lowercase letter',
-      uppercase: 'Password must contain an uppercase letter',
-      digit: 'Password must contain a digit',
-      symbol: 'Password must contain a symbol',
-    },
-    same: 'New password must differ from the current one',
-    mismatch: 'New passwords do not match',
-    changed: 'Password changed. Your other sessions have been signed out.',
-    failed: 'Could not change password',
-    unreachable: 'Could not reach the server. Try again.',
-  },
 
   sections: {
     general: { label: 'General', sub: 'Routing defaults and platform behaviour.' },
@@ -137,10 +90,8 @@ export const copy = {
     sub: 'API credentials stored in this workspace. Router configs and agents reference secrets by name.',
     // Legacy: "Keys are write only … never read back", beside a list that reveals them. The owner can read their own.
     note: 'Values are encrypted at rest. Configs reference a secret by name; only you can read your own secrets back, one at a time.',
-    empty: 'No secrets yet',
-    emptyText: 'Add one below; agents and router configs reference secrets by name.',
+    empty: 'No secrets yet. Add one below. Agents and router configs reference secrets by name.',
     loadWhat: 'your secrets',
-    loading: 'Loading secrets',
     masked: '••••••••',
     updated: (when: string) => `Updated ${when}`,
     show: (n: string) => `Show the value of ${n}`,

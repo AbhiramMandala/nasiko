@@ -9,8 +9,6 @@ import { SERVER_TEXT_MAX } from './tuning'
 export const copy = {
   catalogTitle: 'Agents',
   mineTitle: 'Your agents',
-  // The module's sub-nav (components/bits AgentsNav): Deploy and Builds moved here from the sidebar.
-  sections: { label: 'Agents', all: 'All agents', mine: 'Your agents', builds: 'Builds' },
   searchLabel: 'Search agents',
   searchPlaceholder: 'Search by name, description, tag or skill',
   yours: 'Yours',
@@ -21,8 +19,7 @@ export const copy = {
   hideHarnesses: 'Hide coding harnesses',
   harnessUsage: 'See usage on Harnesses',
   excludesHarnesses: (n: number) => `Excludes ${n} coding harness${n === 1 ? '' : 'es'}`,
-  noResults: 'No agents match this search',
-  noResultsHint: 'Try another name, tag or skill, or clear the search and filters.',
+  noResults: 'No agents match this search.',
   clearSearch: 'Clear search',
   /** The Overview's Fleet health filter (overview design 15A). */
   healthChip: (rating: string) => `Health: ${rating}`,
@@ -31,13 +28,9 @@ export const copy = {
   healthCostFailed:
     "Couldn't load cost data: cost ratings read Unknown, so this list may be incomplete.",
   loadingMore: 'Loading more…',
-  loadingAgents: 'Loading agents',
-  loadingAgent: 'Loading agent',
   partialLoad: "Couldn't load all agents.",
-  noAgentsCatalog: 'No agents yet',
-  noAgentsCatalogHint: 'Deploy one here, or from a terminal with the CLI below.',
-  noAgentsMine: "You haven't deployed an agent yet",
-  noAgentsMineHint: 'Agents you deploy show up here with their status and usage.',
+  noAgentsCatalog: 'No agents yet.',
+  noAgentsMine: "You haven't deployed an agent yet.",
   firstRunIntro: 'Deploy your first agent from a terminal:',
   firstRunSteps: [
     'Connect the CLI to this server',
@@ -63,9 +56,7 @@ export const copy = {
   moreActionsFor: (name: string) => `More actions for ${name}`,
   whyAttention: (name: string) => `Why ${name} needs attention`,
   crashNoReason: 'The server recorded no reason; open the agent for recent error lines.',
-  noAgentsInTab: (tab: string) => `No agents in ${tab}`,
-  noAgentsInTabHint: 'None of your agents are in this tab right now.',
-  showAllAgents: 'Show all your agents',
+  noAgentsInTab: (tab: string) => `No agents in ${tab}.`,
   agentsCount: (n: number) => `${n} agent${n === 1 ? '' : 's'}`,
   dismiss: 'Dismiss',
   deletedNotice: (name: string) => `Deleted ${name}.`,
@@ -157,7 +148,6 @@ export const copy = {
   logLines: 'Log lines, newest first',
 
   versions: 'Versions',
-  loadingVersions: 'Loading versions',
   noVersions: 'No versions yet (never deployed).',
   active: 'Active',
   rollBackTo: 'Roll back to this version',

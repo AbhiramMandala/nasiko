@@ -58,6 +58,17 @@ export function NewChatHero({
   )
 }
 
+export function HeroSkeleton() {
+  return (
+    <div className="flex flex-col items-center gap-2" aria-busy>
+      <span className="sr-only">{copy.loading}</span>
+      <Skeleton className="size-8 motion-reduce:animate-none" />
+      <Skeleton className="h-7 w-48 motion-reduce:animate-none" />
+      <Skeleton className="h-4 w-64 motion-reduce:animate-none" />
+    </div>
+  )
+}
+
 /** Example chips under the composer: a chip fills the composer and focuses it; it doesn't send. */
 export function ExampleChips({
   examples,

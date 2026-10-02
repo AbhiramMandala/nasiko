@@ -4,8 +4,7 @@
  * the right. The narrative is the hero; the figures support it and never repeat a whole sentence. The spike clause links to that day's sessions and is a shared
  * `layoutId` source for the Sessions header morph.
  */
-// Budgets hidden: Link served only the Budgets link below.
-// import { Link } from '@tanstack/react-router'
+import { Link } from '@tanstack/react-router'
 import { m } from 'motion/react'
 import type { ReactNode } from 'react'
 import { Card } from '@/components/ui/card'
@@ -120,7 +119,6 @@ export function SummaryHero({
           </Figure>
           <Figure
             label="Month-end at pace"
-            /* Budgets hidden: no server support for /api/budgets yet (R-L10). Restore when it lands.
             aside={
               // LLM router R2 (A3): budgets use router-metered token_usage, not this page's trace_usage, so only a link.
               <Link
@@ -133,7 +131,6 @@ export function SummaryHero({
                 Budgets <span aria-hidden>→</span>
               </Link>
             }
-            */
             value={
               month?.show && month.low !== null && month.high !== null ? (
                 <>

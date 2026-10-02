@@ -72,11 +72,9 @@ describe('Your agents folding', () => {
     await waitFor(() => expect(reviewer.closest('tr')).toHaveTextContent(copy.source.default))
     // It shows above the group, so the group says "more" and agrees with the strip's 15.
     expect(folded()).toHaveTextContent(copy.foldedTitleMore('14'))
-    expect(
-      within(screen.getByRole('navigation', { name: copy.summaryLabel })).getByRole('button', {
-        name: /^15 on your default/,
-      }),
-    ).toBeInTheDocument()
+    expect(screen.getByRole('navigation', { name: copy.summaryLabel })).toHaveTextContent(
+      '15 on your default',
+    )
   })
 
   it('a search appears from 20 agents, matches names, and unfolds while it narrows', async () => {

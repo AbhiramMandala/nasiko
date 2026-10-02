@@ -20,8 +20,10 @@ export const durations = {
   panelIn: 220,
   /** Sheets and side panels closing. */
   panelOut: 160,
-  /** The login showcase's headline: how long each word stays before the next one (the prototype's 2.8 s). */
-  wordHold: 2800,
+  /** The login showcase's typewriter: per character typed, per character erased, and the pause on a word. */
+  typeChar: 60,
+  eraseChar: 30,
+  typeHold: 1500,
 } as const
 
 export const ease = 'easeOut' as const

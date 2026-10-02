@@ -31,8 +31,6 @@ import {
   SCAN_PAGE_SIZE,
   STATUS_CHECK_CONCURRENCY,
   STATUS_TRACES_PER_SESSION,
-  TEMPO_MAX_SEARCH_MS,
-  TEMPO_SAFETY_MS,
   WINDOW_FREEZE_MS,
 } from '@/features/observability/tuning'
 import { resolveWindow } from '@/features/tokenops/window'
@@ -76,17 +74,6 @@ async function fetchPage(
   return { sessions: raw.data.sessions, hasNextPage: raw.data.pagination.has_next_page, raw }
 }
 
-/**
- * session/list's start_time for a window. A 7-day window (its start at Tempo's limit, give or take a minute) starts
- * TEMPO_SAFETY_MS later, so its trace lookups stay under the limit; it drops that first quarter hour. Older starts
- * are sent as they are, and the page explains the missing trace data.
- */
-export function tempoSafeStart(start: Date, now: Date): Date {
-  const floor = now.getTime() - TEMPO_MAX_SEARCH_MS + TEMPO_SAFETY_MS
-  const t = start.getTime()
-  return t < floor && t >= floor - 2 * TEMPO_SAFETY_MS ? new Date(floor) : start
-}
-
 let frozen: { key: string; at: Date } | null = null
 /** One "now" per window key, reused for WINDOW_FREEZE_MS so remounts (and the route's prefetch) keep the same query key. */
 export function frozenNow(key: string): Date {
@@ -115,9 +102,8 @@ export function prefetchSessions(
   search: Pick<SessionsSearch, 'preset' | 'from' | 'to' | 'day'>,
 ) {
   if (search.day) return
-  const now = frozenNow(`${search.preset}|${search.from}|${search.to}`)
-  const win = resolveWindow(search, now)
-  void client.prefetchInfiniteQuery(fleetQuery(win.key, tempoSafeStart(win.start, now)))
+  const win = resolveWindow(search, frozenNow(`${search.preset}|${search.from}|${search.to}`))
+  void client.prefetchInfiniteQuery(fleetQuery(win.key, win.start))
 }
 
 /** Fleet mode: 100 rows per page from the window start; the range end is filtered client-side. */

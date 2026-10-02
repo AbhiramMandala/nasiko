@@ -1,5 +1,6 @@
+import { Link } from '@tanstack/react-router'
 import { Badge } from '@/components/ui/badge'
-import { SectionNav as SharedSectionNav } from '@/components/shared/section-nav'
+import { Button } from '@/components/ui/button'
 import { copy } from '../copy'
 import type { Tone } from '../logic'
 
@@ -37,5 +38,21 @@ const SECTIONS = [
 
 /** Deployed · Drafts · Runs: the three lists are one module (the React nav's three items). */
 export function SectionNav({ current }: { current: (typeof SECTIONS)[number]['to'] }) {
-  return <SharedSectionNav label={copy.nav.label} sections={SECTIONS} current={current} />
+  return (
+    <nav aria-label={copy.nav.label} className="flex flex-wrap gap-1">
+      {SECTIONS.map((s) => (
+        <Button
+          key={s.to}
+          asChild
+          size="sm"
+          variant={s.to === current ? 'secondary' : 'ghost'}
+          className={s.to === current ? 'font-medium' : 'font-normal text-muted-foreground'}
+        >
+          <Link to={s.to} aria-current={s.to === current ? 'page' : undefined}>
+            {s.label}
+          </Link>
+        </Button>
+      ))}
+    </nav>
+  )
 }

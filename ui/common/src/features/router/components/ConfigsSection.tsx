@@ -2,8 +2,7 @@
  * Your configs (plan §4.1): each config's routing sentence, key, "Used by N" and a row menu (Edit, default,
  * Duplicate, Delete, CLI equivalent). Configs made elsewhere show as stored, with their warnings.
  */
-import { AlertTriangle, MoreHorizontal, Waypoints } from 'lucide-react'
-import { EmptyState } from '@/components/shared/state-card'
+import { AlertTriangle, MoreHorizontal } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -15,6 +14,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Skeleton } from '@/components/ui/skeleton'
 import { CopyMenuItem } from '@/components/shared/copy-button'
+import { StateCard } from '@/features/observability/StateCard'
 import { copy } from '../copy'
 import { cliLine, countText, keySource, routingSentence, usedBy, type RowRead } from '../routing'
 import type { LlmConfig } from '../types'
@@ -74,17 +74,14 @@ export function ConfigsSection({
       ) : configs.isError && !configs.data ? (
         <SectionError error={configs.error} onRetry={() => void configs.refetch()} />
       ) : list.length === 0 ? (
-        <EmptyState
-          icon={Waypoints}
+        <StateCard
           title={copy.noConfigs}
           action={
             <Button className="pointer-coarse:min-h-11" size="sm" onClick={onNew}>
               {copy.createFirst}
             </Button>
           }
-        >
-          {copy.noConfigsText}
-        </EmptyState>
+        />
       ) : (
         <ul
           className="divide-y divide-border rounded-lg border border-border bg-card"

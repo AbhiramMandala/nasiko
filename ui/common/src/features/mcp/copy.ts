@@ -70,11 +70,7 @@ export const copy = {
   toolkitsFailed: "Couldn't load toolkits. Custom servers are shown.",
   retry: 'Retry',
   clearSearch: 'Clear search',
-  loadingCatalog: 'Loading MCP servers',
-  loadingServer: 'Loading MCP server',
-  loadingLogs: 'Loading build logs',
-  noResults: (q: string) => `No servers match “${q}”`,
-  noResultsHint: 'Search by server name or description, or clear the search.',
+  noResults: 'No servers match your search.',
   empty: {
     all: {
       title: 'No connectable services yet',

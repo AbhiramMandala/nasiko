@@ -20,9 +20,7 @@ describe('URL contract', () => {
       mock: 'chaos',
       demo: 1,
     })
-    // Sessions and the trace fall back to 7d (TokenOps keeps 30d).
-    expect(t).toMatchObject({ preset: '7d', compare: false, demo: true })
-    expect(tokenopsSearchSchema.parse({ preset: 'nope' }).preset).toBe('30d')
+    expect(t).toMatchObject({ preset: '30d', compare: false, demo: true })
     for (const k of ['day', 'lane', 'status', 'trace', 'span', 'mock'] as const)
       expect(t[k]).toBeUndefined()
     expect(traceSearchSchema.parse({ span: 'ABCdef0123' }).span).toBe('ABCdef0123')

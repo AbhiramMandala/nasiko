@@ -8,25 +8,10 @@ import { Button } from '@/components/ui/button'
 import { FirstRunSteps } from '@/features/agents/components/bits'
 import { DeployAgentButton } from '@/features/deploy/components/DeployAgentButton'
 import { copy as deployCopy } from '@/features/deploy/copy'
-import { useGuide } from '@/features/onboarding/api'
-import { GuideSteps } from '@/features/onboarding/GuideCard'
 import { copy } from '../copy'
 import { Card, TOUCH } from './Card'
 
 export function FirstRun() {
-  // The onboarding guide covers deploying (its Bring an agent step), so the Setup guide card leads instead (spec §4);
-  // servers without the endpoint keep the deploy card.
-  const { absent } = useGuide()
-  if (!absent)
-    return (
-      <Card
-        id="overview-setup-guide"
-        title={copy.setup.button}
-        className="@[700px]:col-span-2 @[1100px]:col-span-3"
-      >
-        <GuideSteps buttonClassName={TOUCH} />
-      </Card>
-    )
   return (
     <Card
       id="overview-first-run"

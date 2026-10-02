@@ -137,10 +137,10 @@ export function NewWorkflowPage() {
   })
   const run = useMutation({
     mutationFn: (id: string) => runWorkflow(id),
-    // The Runs tab with the run open, as Run does (`run.ts`).
-    onSuccess: (r) =>
+    onSuccess: (r, id) =>
       void navigate({
-        to: '/workflows/runs',
+        to: '/workflows/$workflowId',
+        params: { workflowId: id },
         search: { run: r.execution_id },
         ignoreBlocker: true,
       }),

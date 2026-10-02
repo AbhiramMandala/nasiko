@@ -1,14 +1,15 @@
 /**
  * One panel per harness (plan §6, G2): name → active / registered + adoption bar → idle →
- * Est. cost · per active dev · per session · sessions → Δ → top model. Only the filter icon is
+ * Est. cost · per active dev · per session · sessions → Δ → top model. Only the name row is
  * the harness-filter toggle (shadcn `Toggle`, aria-pressed); the card is a container, so the term
  * tooltips are never nested inside a button.
  */
 import { Check, Filter } from 'lucide-react'
 import { m } from 'motion/react'
-import type { CSSProperties, ReactNode } from 'react'
+import type { CSSProperties } from 'react'
 import { Card } from '@/components/ui/card'
 import { Progress } from '@/components/ui/progress'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Toggle } from '@/components/ui/toggle'
 import { POLARITY } from '@/lib/delta'
 import { fmtInt } from '@/lib/format'
@@ -34,6 +35,7 @@ export function HarnessPanels({
   perHarnessUnpricedKnown = true,
   sessionsKnown = true,
   showTopModel = true,
+  loading,
 }: {
   items: PanelItem[]
   selected?: string
@@ -45,7 +47,21 @@ export function HarnessPanels({
   /** False in the live fallback: the own-only session list is capped, not windowed, so no count. */
   sessionsKnown?: boolean
   showTopModel?: boolean
+  loading?: boolean
 }) {
+  if (loading) {
+    return (
+      <div
+        aria-busy="true"
+        className="grid grid-cols-1 gap-3 sm:grid-cols-[repeat(auto-fit,minmax(14rem,1fr))]"
+      >
+        <span className="sr-only">Loading harnesses</span>
+        {[0, 1, 2, 3].map((i) => (
+          <Skeleton key={i} className="h-40 w-full rounded-lg" />
+        ))}
+      </div>
+    )
+  }
   return (
     // Columns follow the card count: five harnesses share one row on wide screens, one column on
     // phones, and one or two cards never stretch past a third of the row (QA ISSUE-001).
@@ -78,91 +94,86 @@ export function HarnessPanels({
                 term tooltips below are never nested inside a button. */}
             <Card
               className={cn(
-                'h-full w-full gap-3 rounded-lg p-4 text-left text-sm shadow-none transition-colors',
+                'h-full min-h-44 w-full gap-2 rounded-lg p-3 text-left text-sm shadow-none transition-colors',
                 pressed ? 'border-foreground/50 ring-1 ring-foreground/20' : 'border-border',
               )}
             >
-              <div className="-my-1 flex min-h-8 items-center justify-between gap-2">
-                <HarnessLabel id={it.harness} className="min-w-0 truncate font-medium" />
-                <Toggle
-                  pressed={pressed}
-                  aria-label={`Filter by ${s.known ? s.name : `${s.name} (${it.harness})`}`}
-                  onPressedChange={() => onToggle(it.harness)}
-                  className="-mr-2 size-8 min-w-8 shrink-0 p-0 text-foreground hover:bg-muted/60 hover:text-foreground data-[state=on]:bg-transparent data-[state=on]:text-foreground max-sm:size-11"
-                >
-                  {pressed ? (
-                    <Check className="size-4 text-foreground" aria-hidden />
-                  ) : (
-                    <Filter className="size-3.5 text-muted-foreground" aria-hidden />
-                  )}
-                </Toggle>
-              </div>
-              {/* Adoption: the figure, its bar, then the caption with idle seats on the same line. */}
-              <div className="flex flex-col gap-2">
-                <span className="text-2xl leading-none font-semibold tabular-nums">
-                  {fmtInt(t.active_devs)}
-                  <span className="text-sm font-normal text-muted-foreground">
-                    {' '}
+              <Toggle
+                pressed={pressed}
+                aria-label={`Filter by ${s.known ? s.name : `${s.name} (${it.harness})`}`}
+                onPressedChange={() => onToggle(it.harness)}
+                className="-m-1 h-auto min-h-8 justify-between p-1 text-left text-foreground hover:bg-muted/60 hover:text-foreground data-[state=on]:bg-transparent data-[state=on]:text-foreground max-sm:min-h-11"
+              >
+                <HarnessLabel id={it.harness} className="font-medium" />
+                {pressed ? (
+                  <Check className="size-4 text-foreground" aria-hidden />
+                ) : (
+                  <Filter className="size-3.5 text-muted-foreground" aria-hidden />
+                )}
+              </Toggle>
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-2xl font-semibold tabular-nums">
+                  {fmtInt(t.active_devs)}{' '}
+                  <span className="text-base font-normal text-muted-foreground">
                     / {fmtInt(t.registered_devs)}
                   </span>
                 </span>
+                {t.idle_seats > 0 ? (
+                  <span className="text-sm font-medium text-warning tabular-nums">
+                    {fmtInt(t.idle_seats)} {copy.idle}
+                  </span>
+                ) : null}
+              </div>
+              <div className="flex flex-col gap-1">
                 <Progress
                   aria-hidden
                   value={adoptionPct}
                   className="h-1.5 bg-muted [&>[data-slot=progress-indicator]]:rounded-full [&>[data-slot=progress-indicator]]:bg-(--bar)"
                   style={{ '--bar': s.edge } as CSSProperties}
                 />
-                <div className="flex flex-wrap items-baseline justify-between gap-x-2 text-xs">
-                  <span className="text-muted-foreground">
-                    active / <Term tip={copy.registeredTip}>{copy.registered.toLowerCase()}</Term>
-                  </span>
-                  {t.idle_seats > 0 ? (
-                    <span className="font-medium text-warning tabular-nums">
-                      {fmtInt(t.idle_seats)} {copy.idle}
-                    </span>
-                  ) : null}
-                </div>
+                <span className="text-xs text-muted-foreground">
+                  active / <Term tip={copy.registeredTip}>{copy.registered.toLowerCase()}</Term>
+                </span>
               </div>
-              {/* One label/value row per figure: a narrow card never wraps a value under its label. */}
-              <dl className="mt-auto flex flex-col gap-1.5 border-t border-border pt-3 text-xs">
-                <Row
-                  label={<Term tip={copy.estCostTip}>{copy.estCost}</Term>}
-                  className="text-sm font-semibold text-foreground"
-                >
-                  <CostFigure view={view} />
-                </Row>
+              <dl className="mt-auto grid grid-cols-2 gap-x-3 gap-y-1 border-t border-border pt-2 text-xs">
+                <div>
+                  <dt className="text-muted-foreground">
+                    <Term tip={copy.estCostTip}>{copy.estCost}</Term>
+                  </dt>
+                  <dd className="font-medium">
+                    <CostFigure view={view} />
+                  </dd>
+                </div>
                 {/* Ratios follow the total: a mostly-unpriced cost has no meaningful per-dev figure. */}
-                <Row label="per active dev">
-                  <Ratio value={priced ? costPerActiveDev(t) : null} />
-                </Row>
-                <Row label="per session">
-                  <Ratio value={priced && sessionsKnown ? costPerSession(t) : null} />
-                </Row>
-                <Row label="sessions">
-                  {sessionsKnown ? (
-                    fmtInt(t.sessions)
-                  ) : (
-                    <span className="text-muted-foreground">—</span>
-                  )}
-                </Row>
+                <div>
+                  <dt className="text-muted-foreground">per active dev</dt>
+                  <dd>
+                    <Ratio value={priced ? costPerActiveDev(t) : null} />
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">per session</dt>
+                  <dd>
+                    <Ratio value={priced && sessionsKnown ? costPerSession(t) : null} />
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">sessions</dt>
+                  <dd className="tabular-nums">
+                    {sessionsKnown ? (
+                      fmtInt(t.sessions)
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </dd>
+                </div>
               </dl>
-              {/* min-h keeps the row when it is empty (Compare off, no top model), so Compare never moves the divider. */}
-              <div className="flex min-h-4 items-center justify-between gap-2 text-xs">
-                {showTopModel && it.topModel ? (
-                  <span
-                    className="min-w-0 truncate font-mono text-muted-foreground"
-                    title={`Top model: ${it.topModel}`}
-                  >
-                    {it.topModel}
-                  </span>
-                ) : (
-                  <span />
-                )}
+              <div className="flex items-center justify-between gap-2 text-xs">
                 {compare ? (
                   prevUnavailable ? (
-                    <span className="shrink-0 text-muted-foreground">{copy.deltaUnavailable}</span>
+                    <span className="text-muted-foreground">{copy.deltaUnavailable}</span>
                   ) : (
-                    <span className="inline-flex shrink-0 items-center gap-1 text-muted-foreground">
+                    <span className="inline-flex items-center gap-1">
                       turns{' '}
                       <Delta
                         changePct={t.delta_pct}
@@ -171,13 +182,23 @@ export function HarnessPanels({
                       />
                     </span>
                   )
+                ) : (
+                  <span />
+                )}
+                {showTopModel && it.topModel ? (
+                  <span
+                    className="truncate text-muted-foreground"
+                    title={`Top model: ${it.topModel}`}
+                  >
+                    {it.topModel}
+                  </span>
                 ) : null}
               </div>
               {/* The line's space is kept on every card (invisible when empty) so the metrics above line up across the row. */}
               {perHarnessUnpricedKnown ? (
                 <span
                   className={cn(
-                    '-mt-2 text-xs text-muted-foreground',
+                    'text-xs text-muted-foreground',
                     !(t.unpriced_calls > 0 && priced) && 'invisible',
                   )}
                   aria-hidden={!(t.unpriced_calls > 0 && priced) || undefined}
@@ -190,23 +211,5 @@ export function HarnessPanels({
         )
       })}
     </section>
-  )
-}
-
-/** One figure of a card: label left, value right. */
-function Row({
-  label,
-  className,
-  children,
-}: {
-  label: ReactNode
-  className?: string
-  children: ReactNode
-}) {
-  return (
-    <div className="flex items-baseline justify-between gap-2">
-      <dt className="text-muted-foreground">{label}</dt>
-      <dd className={cn('tabular-nums', className)}>{children}</dd>
-    </div>
   )
 }

@@ -19,7 +19,7 @@
         var theme = null, accent = null
         try { theme = localStorage.getItem('openruntime.theme'); accent = localStorage.getItem('openruntime.accent') } catch (e) {}
         if (theme !== 'light' && theme !== 'dark') theme = 'system'
-        if (['teal', 'indigo', 'plum', 'carbon'].indexOf(accent) < 0) accent = 'carbon'
+        if (['teal', 'indigo', 'plum', 'carbon'].indexOf(accent) < 0) accent = 'teal'
         if (/\/login\/?$/.test(location.pathname)) accent = 'carbon'
         var dark = theme === 'dark' || (theme === 'system' && !!window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)
         document.documentElement.classList.toggle('dark', dark)

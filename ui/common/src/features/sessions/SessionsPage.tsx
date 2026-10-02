@@ -9,13 +9,12 @@
  */
 import { useQuery } from '@tanstack/react-query'
 import { m } from 'motion/react'
-import { ListTree, Pause, Play, SearchX, X } from 'lucide-react'
+import { Pause, Play, X } from 'lucide-react'
 import { useCallback, useMemo, useState, type ReactNode } from 'react'
 import { PageHeader } from '@/components/shared/page-header'
-import { PageLoader } from '@/components/shared/page-loader'
-import { EmptyState } from '@/components/shared/state-card'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Toggle } from '@/components/ui/toggle'
 import {
   Select,
@@ -34,7 +33,7 @@ import {
   sortSessions,
   type Status,
 } from '@/features/observability/sessions'
-import { ErrorState } from '@/features/observability/StateCard'
+import { ErrorState, StateCard } from '@/features/observability/StateCard'
 import {
   morphId,
   SCAN_MAX_PAGES,
@@ -51,7 +50,7 @@ import { meQuery } from '@/lib/api/auth'
 import { env } from '@/lib/env'
 import { cn } from '@/lib/utils'
 import { useAgentsDirectory } from '@/features/agents/api'
-import { frozenNow, tempoSafeStart, useDayScan, useFleetSessions, useSessionStatuses } from './api'
+import { frozenNow, useDayScan, useFleetSessions, useSessionStatuses } from './api'
 import { useLiveFeed } from './live'
 import { SessionRow } from './SessionRow'
 import type { SessionsSearch } from './search'
@@ -89,12 +88,11 @@ export function SessionsPage({
   const [paused, setPaused] = useState(search.live === 'paused')
 
   const me = useQuery(meQuery)
+  const fleet = useFleetSessions(win.key, win.start, win.end, !dayMode)
   // session/list searches Tempo from start_time to the server's now: past Tempo's limit, every
-  // lookup fails. 7d is sent just inside it (tempoSafeStart); longer windows go past it.
-  const fleetStart = useMemo(() => tempoSafeStart(win.start, now), [win.start, now])
-  const fleet = useFleetSessions(win.key, fleetStart, win.end, !dayMode)
-  // The start is what was sent (day start in day mode).
-  const listStart = dayMode ? new Date(`${day}T00:00:00Z`) : fleetStart
+  // lookup fails. The start is what was sent (day start in day mode). 7d counts: its start is
+  // floored to the minute and the server's end is later, so it's always just over 168 h.
+  const listStart = dayMode ? new Date(`${day}T00:00:00Z`) : win.start
   const longSearch = now.getTime() - listStart.getTime() >= TEMPO_MAX_SEARCH_MS
   const scan = useDayScan(day, maxPages)
   const agents = useAgentsDirectory()
@@ -112,7 +110,7 @@ export function SessionsPage({
     mode: env.mode,
     running: !dayMode && !paused && !pastWindow,
     today,
-    windowStart: fleetStart,
+    windowStart: win.start,
     windowEndMs: pastWindow ? win.end.getTime() : null,
   })
   const rowsAll = dayMode ? base : live.rows
@@ -324,12 +322,12 @@ export function SessionsPage({
               {copy.scanning(scan.pages.length + 1, maxPages)}
             </p>
           ) : null}
-          <PageLoader label="Loading sessions" />
+          <ListSkeleton />
         </>
       ) : empty ? (
-        <EmptyState
-          icon={ListTree}
+        <StateCard
           title={copy.emptyTitle}
+          fix={env.mode === 'live' ? copy.sparseLive : copy.emptyBody}
           action={
             !dayMode && search.preset !== '30d' ? (
               <Button
@@ -341,9 +339,7 @@ export function SessionsPage({
               </Button>
             ) : undefined
           }
-        >
-          {env.mode === 'live' ? copy.sparseLive : copy.emptyBody}
-        </EmptyState>
+        />
       ) : (
         <>
           {/* Rows come from the DB even when their trace lookups failed: list them (each opens its
@@ -422,17 +418,17 @@ export function SessionsPage({
             {!dayMode && live.fresh.size ? copy.newSessions(live.fresh.size) : ''}
           </span>
 
-          {shown.length ? (
-            <div className="rounded-lg border border-border">
-              <div className="hidden grid-cols-[5.5rem_10rem_minmax(0,1fr)_5rem_4.5rem_8.5rem_2.75rem] gap-x-3 border-b border-border px-2 py-2 text-xs text-muted-foreground md:grid">
-                <span>{dayMode ? 'Time (UTC)' : 'Started (UTC)'}</span>
-                <span>Agent</span>
-                <span>First input</span>
-                <span className="text-right">Cost</span>
-                <span className="text-right">Duration</span>
-                <span>Status</span>
-                <span />
-              </div>
+          <div className="rounded-lg border border-border">
+            <div className="hidden grid-cols-[5.5rem_10rem_minmax(0,1fr)_5rem_4.5rem_8.5rem_2.75rem] gap-x-3 border-b border-border px-2 py-2 text-xs text-muted-foreground md:grid">
+              <span>{dayMode ? 'Time (UTC)' : 'Started (UTC)'}</span>
+              <span>Agent</span>
+              <span>First input</span>
+              <span className="text-right">Cost</span>
+              <span className="text-right">Duration</span>
+              <span>Status</span>
+              <span />
+            </div>
+            {shown.length ? (
               <ul aria-label="Sessions" {...live.listProps}>
                 {shown.map((s) => (
                   <SessionRow
@@ -451,26 +447,10 @@ export function SessionsPage({
                   />
                 ))}
               </ul>
-            </div>
-          ) : (
-            <EmptyState
-              icon={SearchX}
-              title={copy.noMatchTitle}
-              action={
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() =>
-                    setSearch({ agent: undefined, lane: undefined, status: undefined })
-                  }
-                >
-                  {copy.clearFilters}
-                </Button>
-              }
-            >
-              {copy.noMatchBody}
-            </EmptyState>
-          )}
+            ) : (
+              <p className="p-4 text-sm text-muted-foreground">No sessions match these filters.</p>
+            )}
+          </div>
           <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
             <span>{copy.statusCaption(lanes.checked, filtered.length)}</span>
             {!dayMode ? (
@@ -601,5 +581,17 @@ function Notice({ tone = 'info', children }: { tone?: 'info' | 'warning'; childr
         <p>{children}</p>
       </AlertDescription>
     </Alert>
+  )
+}
+
+function ListSkeleton() {
+  return (
+    // Busy, not a live region: the page's own status lines speak (plan §8 Phase 9).
+    <div aria-busy="true" className="flex flex-col gap-2">
+      <span className="sr-only">Loading sessions</span>
+      {Array.from({ length: 8 }, (_, i) => (
+        <Skeleton key={i} className="h-10 bg-muted" />
+      ))}
+    </div>
   )
 }

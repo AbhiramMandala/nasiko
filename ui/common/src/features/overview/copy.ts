@@ -9,20 +9,11 @@ const pct = (v: number) => `${Math.round(v)}%`
 export const copy = {
   title: 'Overview',
   loading: 'Loading',
-  loadingPage: 'Loading the Overview',
   meFailed: "Couldn't reach OpenRuntime to load your account.",
   checkStatus: 'Check server status',
   retry: 'Retry',
   couldntLoad: (what: string) => `Couldn't load ${what}.`,
   couldntCheck: (what: string) => `Couldn't check ${what}`,
-  summary: 'Summary',
-  month: {
-    // Fleet, never "your": the calendar is fleet-wide (eng review R2).
-    label: 'Fleet spend this month',
-    ofLast: (mtd: string, last: string) => `${mtd} of last month's ${last}`,
-    noLast: (mtd: string) => `${mtd} · no spend last month`,
-    over: 'over forecast',
-  },
   headline: {
     checking: 'Checking your fleet…',
   },
@@ -40,6 +31,8 @@ export const copy = {
   },
   kpi: {
     spend: 'Spend',
+    thisMonth: (mtd: string) => `${mtd} fleet spend this month`,
+    forecast: (low: string, high: string) => `forecast ${low}–${high}`,
     runs: 'Agent runs',
     perDay: (n: string) => `${n} per day`,
     agents: 'Agents running',
@@ -140,7 +133,7 @@ export const copy = {
     failed: 'Failed',
     ok: 'Succeeded',
     unchecked: 'Not checked',
-    none: 'No sessions in the last 7 days.',
+    none: 'No sessions in the last 24 h.',
     traceStore: 'Sessions need the trace store.',
     open: 'Open Sessions',
   },
@@ -162,6 +155,7 @@ export const copy = {
     link: 'TokenOps',
     what: "this month's spend",
     rangeWhat: 'spend by agent',
+    fleetThisMonth: 'fleet spend this month',
     noSpendYet: 'No spend yet this month',
     forecast: (low: string, high: string) => `Forecast ${low}–${high}`,
     forecastFrom: (day: number) => `Forecast from day ${day}`,

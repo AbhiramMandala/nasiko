@@ -48,7 +48,6 @@ export const copy = {
       emptyText:
         'Turn a tested workflow into a reusable pipeline that you can run whenever you need it.',
       other: 'View drafts',
-      loading: 'Loading deployed workflows',
     },
     drafts: {
       title: 'Draft workflows',
@@ -57,7 +56,6 @@ export const copy = {
       emptyText:
         'Create a multi-agent workflow, test how the steps work together, and refine it before deploying.',
       other: 'View deployed',
-      loading: 'Loading draft workflows',
     },
   } satisfies Record<ListMode, unknown>,
   searchPlaceholder: 'Search',
@@ -74,6 +72,7 @@ export const copy = {
   actions: 'Workflow actions',
   open: 'Open workflow',
   runNow: 'Run now',
+  starting: 'Starting…',
   delete: 'Delete workflow',
   deleted: 'Workflow deleted',
   deleteTitle: (name: string) => `Delete ${name || 'workflow'}?`,
@@ -161,7 +160,6 @@ export const copy = {
   notFoundText: 'It may have been deleted.',
   backToWorkflows: 'Back to workflows',
   loadOneFailed: "Couldn't load this workflow",
-  loadingWorkflow: 'Loading workflow',
   crumbDeployed: 'Workflows',
   crumbDrafts: 'Drafts',
   stepsTitle: 'Steps',
@@ -179,7 +177,6 @@ export const copy = {
   dangerAfter: 'Existing workflow runs will not be affected.',
 
   // Runs
-  startingRun: 'Starting the run…',
   backToWorkflow: 'Back to workflow',
   execution: 'Execution',
   executionN: (n: number) => `Execution #${n}`,
@@ -196,8 +193,6 @@ export const copy = {
   runNotFound: 'Run not found',
   runNotFoundText: 'It may have been removed, or it belongs to someone else.',
   loadRunFailed: "Couldn't load this run",
-  loadingRun: 'Loading run',
-  loadingRuns: 'Loading workflow runs',
   runsTitle: 'Workflow runs',
   runsSearch: 'Search workflow runs',
   statusFilter: 'Filter by status',
@@ -206,9 +201,7 @@ export const copy = {
   noRuns: 'No workflow runs yet',
   noRunsText: 'Your workflow runs will appear here once you start executing a deployed workflow.',
   viewWorkflows: 'View workflows',
-  noRunsMatch: 'No runs match these filters',
-  noRunsMatchText: 'Try another search, status or age.',
-  clearFilters: 'Clear filters',
+  noRunsMatch: 'No runs match these filters.',
   orphan: 'Workflow not found',
   openDraft: 'Open draft',
   rerun: 'Rerun',

@@ -90,7 +90,7 @@ export function RoutingSheet({
         if (!o) onClose()
       }}
     >
-      <SheetContent className="w-full gap-0 sm:max-w-sheet" onCloseAutoFocus={returnFocus}>
+      <SheetContent className="w-full gap-0 sm:max-w-sheet-sm" onCloseAutoFocus={returnFocus}>
         {target ? (
           <Fresh
             key={target.id}

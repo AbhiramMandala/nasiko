@@ -16,12 +16,9 @@ const f = copy.fields
 const sectionNav = () => screen.findByRole('navigation', { name: copy.nav.label }, T)
 
 describe('Settings: workspace sections (plans/feat-settings.md §1.1)', () => {
-  it('opens from the account menu on General, with the legacy module nav (no SSO in OSS)', async () => {
+  it('opens from the sidebar on General, with the legacy module nav (no SSO in OSS)', async () => {
     const { router } = renderApp('/')
-    await userEvent.click(await screen.findByRole('button', { name: /^Account: / }, T))
-    await userEvent.click(
-      await screen.findByRole('menuitem', { name: shellCopy.account.settings }, T),
-    )
+    await userEvent.click(await screen.findByRole('link', { name: shellCopy.nav.settings }, T))
     await waitFor(() => expect(router.state.location.pathname).toBe('/settings'))
     expect(await screen.findByRole('heading', { level: 1, name: 'General' }, T)).toBeInTheDocument()
     expect(await screen.findByLabelText(f.router_model.label, {}, T)).toHaveValue('deepseek-v4-pro')
@@ -30,7 +27,7 @@ describe('Settings: workspace sections (plans/feat-settings.md §1.1)', () => {
       within(nav)
         .getAllByRole('link')
         .map((l) => l.textContent),
-    ).toEqual(['General', 'Flow limits', 'Registry', 'Secrets', 'Appearance', 'Password'])
+    ).toEqual(['General', 'Flow limits', 'Registry', 'Secrets'])
     expect(within(nav).getByRole('link', { name: 'General' })).toHaveAttribute(
       'aria-current',
       'page',
@@ -116,7 +113,7 @@ describe('Settings: workspace sections (plans/feat-settings.md §1.1)', () => {
     expect(await screen.findByRole('heading', { level: 1, name: 'General' }, T)).toBeInTheDocument()
   })
 
-  it('sends a member to their secrets, with only Secrets, Appearance and Password in the nav', async () => {
+  it('sends a member to their secrets, with only Secrets in the nav', async () => {
     configureMocks({ superuser: false })
     const { router } = renderApp('/settings')
     await waitFor(() => expect(router.state.location.pathname).toBe('/settings/secrets'), T)
@@ -125,6 +122,6 @@ describe('Settings: workspace sections (plans/feat-settings.md §1.1)', () => {
       within(nav)
         .getAllByRole('link')
         .map((l) => l.textContent),
-    ).toEqual(['Secrets', 'Appearance', 'Password'])
+    ).toEqual(['Secrets'])
   })
 })

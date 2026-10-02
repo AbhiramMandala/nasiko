@@ -9,8 +9,7 @@
  *
  * All state lives in the URL. The harness chip and Compare replace history. At most one status line.
  */
-import { SquareTerminal } from 'lucide-react'
-import { EmptyState } from '@/components/shared/state-card'
+import { StateCard } from '@/components/shared/state-card'
 import { useUsersMe } from './api'
 import { copy } from './copy'
 import { useHarnessWindow, useUsageLevel, type SetSearch } from './level'
@@ -64,16 +63,15 @@ export function HarnessesPage({
 
   if (me.isError)
     return <ViewerError header={header} fix="GET /api/users/me failed. Reload to retry." />
-  if (!me.data || (usage.isPending && !absent)) return <LevelLoading header={header} />
+  if (!me.data || (usage.isPending && !absent))
+    return <LevelLoading header={header} compare={compare} />
 
   // ── Not found or not visible (coded 404) ──
   if (level.notVisible)
     return (
       <div className="flex flex-col gap-4">
         {header}
-        <EmptyState icon={SquareTerminal} title={copy.notVisible}>
-          {copy.notVisibleHint}
-        </EmptyState>
+        <StateCard title={copy.notVisible} />
       </div>
     )
 

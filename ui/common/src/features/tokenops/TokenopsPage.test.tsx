@@ -29,25 +29,6 @@ describe('TokenOps page', () => {
     expect(within(table).queryByText(liveAgent.name)).toBeNull()
   })
 
-  it('shows one page loader under the sticky bar on a cold load; a window change keeps the panels', async () => {
-    server.use(
-      http.get(`*${FINOPS}/dashboard`, async () => {
-        await delay(300)
-        return undefined
-      }),
-    )
-    const { router } = renderApp('/tokenops?open=all')
-    // The header is static, so it stays above the loader.
-    await screen.findByRole('heading', { level: 1, name: 'TokenOps' })
-    expect(screen.getByTestId('page-loader')).toBeInTheDocument()
-    expect(screen.queryByText('Spend over time')).toBeNull()
-    await screen.findByTestId('mtd-spend')
-    expect(screen.queryByTestId('page-loader')).toBeNull()
-    await router.navigate({ to: '/tokenops', search: { open: 'all', preset: '7d' } as never })
-    expect(screen.queryByTestId('page-loader')).toBeNull()
-    expect(screen.getByTestId('mtd-spend')).toBeInTheDocument()
-  })
-
   it('sends range only for rolling presets, explicit UTC bounds for This month', async () => {
     const rec = recordRequests()
     try {
@@ -300,7 +281,7 @@ describe('TokenOps page', () => {
     ).toBeInTheDocument()
     server.resetHandlers()
     await user.click(screen.getByRole('button', { name: 'Sign in' }))
-    await waitFor(() => expect(router.state.location.pathname).toBe('/'))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/tokenops'))
   })
 
   it('a 401 mid-session clears the cache and redirects with expired=true', async () => {
@@ -338,8 +319,9 @@ describe('TokenOps page', () => {
     })
     try {
       renderApp('/tokenops?open=all')
-      expect(await screen.findByText('No AI spend recorded yet')).toBeInTheDocument()
-      expect(screen.getByRole('heading', { level: 1, name: 'TokenOps' })).toBeInTheDocument()
+      expect(
+        await screen.findByRole('heading', { name: 'No AI spend recorded yet' }),
+      ).toBeInTheDocument()
     } finally {
       configureMocks({ harnessSeed: generateHarnessSeed({ anchor: FIXED }) })
     }

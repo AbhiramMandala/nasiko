@@ -39,7 +39,7 @@ export const ACCENTS = [
 export type Accent = (typeof ACCENTS)[number]['id']
 
 const DEFAULT_THEME: Theme = 'system'
-const DEFAULT_ACCENT: Accent = 'carbon'
+const DEFAULT_ACCENT: Accent = 'teal'
 
 /** The sign-in screen is always Carbon, whatever the stored choice (user decision 2026-09-30, beside Aceternity's
  *  black showcase and the gold mark); mode still follows the choice. index.html's pre-paint script repeats this. */
@@ -74,7 +74,7 @@ export interface ThemePrefs {
   accent: Accent
 }
 
-/** Stored choices; unknown or missing values fall back to System and Carbon. */
+/** Stored choices; unknown or missing values fall back to System and Teal. */
 export function readPrefs(): ThemePrefs {
   const theme = read(THEME_KEY)
   const accent = read(ACCENT_KEY)

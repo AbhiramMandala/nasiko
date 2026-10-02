@@ -25,25 +25,18 @@ const ready = async () => {
   await waitFor(() => expect(screen.queryAllByText(copy.readingRouting)).toHaveLength(0))
 }
 const announcer = () => screen.getByTestId('router-announcer')
-/** The page shows one tab at a time (Agents first). */
-const showTab = async (name: string) => {
-  const tab = screen.getByRole('tab', { name })
-  if (tab.getAttribute('aria-selected') !== 'true') await userEvent.click(tab)
-}
 /** Picks an option from a shadcn Select (it opens a listbox; there is no native select to target). */
 const choose = async (combobox: HTMLElement, option: string) => {
   await userEvent.click(combobox)
   await userEvent.click(await screen.findByRole('option', { name: option }))
 }
 const openNew = async () => {
-  await showTab(copy.anchors.configs)
   await userEvent.click(screen.getByRole('button', { name: copy.newConfig }))
   const sheet = await screen.findByRole('dialog', { name: copy.editorNew })
   await within(sheet).findByLabelText(copy.fieldName)
   return sheet
 }
 const openEdit = async (name: string) => {
-  await showTab(copy.anchors.configs)
   await userEvent.click(screen.getByRole('button', { name: copy.configActions(name) }))
   await userEvent.click(await screen.findByRole('menuitem', { name: copy.edit }))
   const sheet = await screen.findByRole('dialog', { name: copy.editorEdit(name) })
@@ -213,7 +206,6 @@ describe('custom providers', () => {
     configureMocks({ superuser: false })
     renderApp('/router')
     await ready()
-    await showTab(copy.anchors.providers)
     expect(within(providers()).getAllByText('Custom').length).toBeGreaterThan(0)
     expect(within(providers()).queryByRole('button', { name: copy.addCustom })).toBeNull()
     expect(
@@ -225,7 +217,6 @@ describe('custom providers', () => {
     const rec = recordRequestBodies()
     renderApp('/router')
     await ready()
-    await showTab(copy.anchors.providers)
     await userEvent.click(within(providers()).getByRole('button', { name: copy.addCustom }))
     const sheet = await screen.findByRole('dialog', { name: copy.cpNew })
     await userEvent.type(within(sheet).getByLabelText(copy.cpName), 'Local vLLM')
@@ -254,7 +245,6 @@ describe('custom providers', () => {
     configureMocks({ routerVariants: ['router-custom-down'] })
     renderApp('/router')
     await ready()
-    await showTab(copy.anchors.providers)
     await userEvent.click(within(providers()).getByRole('button', { name: copy.addCustom }))
     const sheet = await screen.findByRole('dialog', { name: copy.cpNew })
     await userEvent.type(within(sheet).getByLabelText(copy.cpBaseUrl), 'http://localhost:9/v1')
@@ -266,7 +256,6 @@ describe('custom providers', () => {
   it('sync announces the model count', async () => {
     renderApp('/router')
     await ready()
-    await showTab(copy.anchors.providers)
     await userEvent.click(
       within(providers()).getByRole('button', { name: copy.configActions('Custom') }),
     )
@@ -277,7 +266,6 @@ describe('custom providers', () => {
   it('delete of a referenced provider lists the configs that use it', async () => {
     renderApp('/router')
     await ready()
-    await showTab(copy.anchors.providers)
     await userEvent.click(
       within(providers()).getByRole('button', { name: copy.configActions('Custom') }),
     )
@@ -360,7 +348,6 @@ describe('review fixes', () => {
     configureMocks({ routerVariants: ['router-catalog-fail'] })
     renderApp('/router')
     await ready()
-    await showTab(copy.anchors.configs)
     await userEvent.click(screen.getByRole('button', { name: copy.newConfig }))
     const sheet = await screen.findByRole('dialog', { name: copy.editorNew })
     await within(sheet).findByLabelText(copy.fieldName)
@@ -411,7 +398,6 @@ describe('review fixes', () => {
   it('an Edit opened from a row menu returns focus to that menu’s trigger', async () => {
     renderApp('/router')
     await ready()
-    await showTab(copy.anchors.configs)
     const trigger = screen.getByRole('button', { name: copy.configActions('research-tiers') })
     const sheet = await openEdit('research-tiers')
     await userEvent.click(within(sheet).getByRole('button', { name: copy.cancel }))
@@ -422,7 +408,6 @@ describe('review fixes', () => {
     const rec = recordRequestBodies()
     renderApp('/router')
     await ready()
-    await showTab(copy.anchors.providers)
     const providers = screen.getByRole('heading', { name: copy.providersTitle }).closest('section')!
     await userEvent.click(
       within(providers).getByRole('button', { name: copy.configActions('Custom') }),
@@ -447,7 +432,6 @@ describe('custom provider host change (review D1)', () => {
   it('a new host needs the key again; the same host keeps the saved one', async () => {
     renderApp('/router')
     await ready()
-    await showTab(copy.anchors.providers)
     const providers = screen.getByRole('heading', { name: copy.providersTitle }).closest('section')!
     await userEvent.click(
       within(providers).getByRole('button', { name: copy.configActions('Custom') }),
@@ -476,7 +460,6 @@ describe('field errors', () => {
   it('a new config opens without error borders; leaving a required field empty marks it', async () => {
     renderApp('/router')
     await ready()
-    await showTab(copy.anchors.configs)
     await userEvent.click(screen.getByRole('button', { name: copy.newConfig }))
     const sheet = await screen.findByRole('dialog', { name: copy.editorNew })
     const name = await within(sheet).findByLabelText(copy.fieldName)

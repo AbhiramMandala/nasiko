@@ -1,9 +1,9 @@
 /** One run of the workflow (plans/feat-workflows.md §6), live while it moves (a paused run included). */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronLeft, RotateCw } from 'lucide-react'
-import { PageLoader } from '@/components/shared/page-loader'
 import { EmptyState, StateCard } from '@/components/shared/state-card'
 import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
 import { relTime } from '@/features/agents/format'
 import { Markdown } from '@/features/chat/components/Markdown'
 import { ApiError } from '@/lib/api/client'
@@ -44,7 +44,14 @@ export function RunView({ wf, exec, onBack }: { wf: Workflow; exec: string; onBa
           }
         />
       )
-  else if (!e) body = <PageLoader label={copy.loadingRun} inline className="min-h-64" />
+  else if (!e)
+    body = (
+      <div className="flex flex-col gap-3" aria-busy="true">
+        <Skeleton className="h-5 w-40" />
+        <Skeleton className="h-16 w-full" />
+        <Skeleton className="h-16 w-full" />
+      </div>
+    )
   else {
     const status = execStatus(e.status)
     const chips = [

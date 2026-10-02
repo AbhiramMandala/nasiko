@@ -12,7 +12,6 @@ import { AlertTriangle, CheckCircle2, Info, RotateCw } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { PageHeader } from '@/components/shared/page-header'
 import { PanelError } from '@/components/shared/panel'
-import { PageLoader } from '@/components/shared/page-loader'
 import { StateCard } from '@/components/shared/state-card'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import {
@@ -24,6 +23,7 @@ import {
 } from '@/components/ui/breadcrumb'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
+import { Skeleton } from '@/components/ui/skeleton'
 import { relTime } from '@/features/agents/format'
 import { useNow } from '@/lib/useNow'
 import { AGENTS_DIRECTORY_KEY, useAgentsDirectory } from '@/features/agents/api'
@@ -107,7 +107,14 @@ export function BuildPage({ buildId }: { buildId: string }) {
     if (currentStage && !seen.current.has(currentStage)) seen.current.set(currentStage, Date.now())
   }, [currentStage])
 
-  if (build.isPending) return <PageLoader label={copy.build.loading} />
+  if (build.isPending)
+    return (
+      <Frame>
+        <Skeleton className="h-9 w-72" />
+        <Skeleton className="h-16 w-full" />
+        <Skeleton className="h-28 w-full" />
+      </Frame>
+    )
   if (build.isError)
     return (
       <Frame>

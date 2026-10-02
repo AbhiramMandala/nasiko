@@ -6,7 +6,6 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useRouter } from '@tanstack/react-router'
 import { ChevronDown } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { PageLoader } from '@/components/shared/page-loader'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { useAgentsDirectory } from '@/features/agents/api'
@@ -15,6 +14,7 @@ import { Composer, type ComposerHandle, type ComposerMode } from './components/C
 import {
   AgentChooser,
   ExampleChips,
+  HeroSkeleton,
   NewChatHero,
   RecentChats,
   TargetBanner,
@@ -398,8 +398,7 @@ function NewChatView({ userId, registry, search, railButton, username }: ViewPro
         {/* The hero and composer sit around 40% of the pane; the block top-aligns once it outgrows it (DS8). */}
         <div aria-hidden className="h-[clamp(1.5rem,calc(30dvh-10rem),14rem)] shrink-0" />
         {target.kind === 'loading' ? (
-          // The hero's own size, so the composer below stays put (and mounted) while targets load.
-          <PageLoader label={copy.loading} inline className="min-h-24 flex-none" />
+          <HeroSkeleton />
         ) : (
           <NewChatHero target={identity} description={agent?.description} />
         )}
