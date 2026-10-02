@@ -302,11 +302,8 @@
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --foreground: oklch(0.145 0 0);
-  /* Lab: 0.556 was 4.3:1 on --muted, the hover fill of rows with a secondary line (chat rail); 0.54 is 4.6:1.
-     0.54 then failed on --accent, which is a step deeper than --muted (0.94 vs 0.97): 4.2:1, caught by axe on the
-     trace waterfall's duration label. Tuned against --accent instead, the darkest fill muted text sits on, so every
-     muted-on-hover case clears AA rather than the next one being found the same way. 0.52 is 4.7:1 there. */
-  --muted-foreground: oklch(0.52 0 0);
+  /* Lab: 0.556 was 4.3:1 on --muted, the hover fill of rows with a secondary line (chat rail); 0.54 is 4.6:1. */
+  --muted-foreground: oklch(0.54 0 0);
   --primary: oklch(0.205 0 0);
   --primary-hover: oklch(0.3 0 0);
   --primary-foreground: oklch(0.985 0 0);
@@ -624,6 +621,26 @@
     to {
       stroke-dashoffset: 0;
       fill-opacity: 1;
+    }
+  }
+  /* The sidebar's waitlist badge (our take on Aceternity's Moving Border, in CSS): a glint circles the pill's 1 px
+     edge while the flag's cloth waves, both looping. Under reduced motion the glint is hidden and the flag still. */
+  --animate-orbit: orbit 3s linear infinite;
+  @keyframes orbit {
+    to {
+      rotate: 360deg;
+    }
+  }
+  --animate-flag-wave: flag-wave 1.4s ease-in-out infinite;
+  @keyframes flag-wave {
+    25% {
+      transform: skewY(-8deg) scaleX(0.92);
+    }
+    50% {
+      transform: none;
+    }
+    75% {
+      transform: skewY(8deg) scaleX(0.95);
     }
   }
   --animate-word-in: word-in 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) both;

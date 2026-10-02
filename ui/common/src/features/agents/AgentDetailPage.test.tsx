@@ -15,7 +15,7 @@ import { configureMocks } from '@/mocks/handlers'
 import { ADMIN_ID } from '@/mocks/seed-harness'
 import { now, seed, setupPinnedSeed } from '@/test/pinnedSeed'
 import { renderApp } from '@/test/renderApp'
-import { recordRequests, server } from '@/test/setup'
+import { recordRequestBodies, recordRequests, server } from '@/test/setup'
 import { copy } from './copy'
 
 setupPinnedSeed()
@@ -291,6 +291,47 @@ describe('settings', () => {
       within(section).getByText(/Restart or redeploy the agent to apply a change\./),
     ).toBeInTheDocument()
     expect(within(section).queryByText(/next time the agent is deployed/)).toBeNull()
+  })
+
+  it('feature switches save at once; coding behaviour shows only for a code-work card', async () => {
+    const rec = recordRequestBodies()
+    renderApp(url(1, 'settings'))
+    const features = await screen.findByRole('region', { name: 'Features' })
+    expect(screen.getByRole('region', { name: 'Token optimization' })).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Coding agent behavior' })).toBeNull()
+    const prompt = within(features).getByRole('switch', { name: 'Prompt comments' })
+    expect(prompt).not.toBeChecked()
+    await userEvent.click(prompt)
+    await waitFor(() => expect(prompt).toBeChecked())
+    await rec.flush()
+    rec.stop()
+    // The PUT replaces the metadata column, so it carries the whole bag, not just the flag.
+    const put = rec.requests.find((r) => r.method === 'PUT')
+    expect(put?.body).toEqual({ metadata: { features: { prompt_comments: 'enabled' } } })
+  })
+
+  it('self-review is a child of minimal-code mode: off and locked until its parent is on', async () => {
+    renderApp(url(2, 'settings'))
+    const section = await screen.findByRole('region', { name: 'Coding agent behavior' })
+    const minimal = within(section).getByRole('switch', { name: 'Minimal-code mode' })
+    const review = within(section).getByRole('switch', { name: 'Self-review' })
+    expect(minimal).not.toBeChecked()
+    expect(review).not.toBeChecked()
+    expect(review).toBeDisabled()
+    await userEvent.click(minimal)
+    // Unset means on (nasiko-coding-policy `self_review_enabled`), so it reads on once the parent is.
+    await waitFor(() => expect(review).toBeEnabled())
+    expect(review).toBeChecked()
+    await userEvent.click(review)
+    await waitFor(() => expect(review).not.toBeChecked())
+    expect(await screen.findByText('CODING_AGENT_SELF_REVIEW')).toBeInTheDocument()
+    await waitFor(() => expect(review).toBeEnabled())
+    await userEvent.click(review)
+    await waitFor(() => expect(screen.queryByText('CODING_AGENT_SELF_REVIEW')).toBeNull())
+    expect(review).toBeChecked()
+    await userEvent.click(minimal)
+    await waitFor(() => expect(review).toBeDisabled())
+    expect(review).not.toBeChecked()
   })
 
   it('a secret value is cleared on submit and only the name is listed', async () => {

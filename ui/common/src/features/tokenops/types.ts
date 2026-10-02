@@ -294,3 +294,28 @@ export const providerCatalogSchema = z.looseObject({
     }),
   ),
 }) satisfies z.ZodType<WireSubset<{ data: ProviderCatalogEntry[] }>>
+
+/**
+ * Proposed: token optimisation savings for a window. No endpoint exists yet, so the Token
+ * optimisation section shows `SAMPLE_OPTIMISATION` (optimisation.ts) until one does. Lists only
+ * agents with optimisation on; savings are input tokens the optimiser removed before the call.
+ */
+export interface OptimisationAgentRow {
+  agent_id: string
+  agent_name: string
+  calls: number
+  input_tokens_before: number
+  input_tokens_after: number
+  /** At API list price. */
+  est_cost_saved_usd: number
+}
+
+export interface OptimisationSummary {
+  agents: OptimisationAgentRow[]
+  total_agents: number
+  fleet_spend_usd: number
+  /** What the optimised agents were billed (after optimisation). */
+  optimised_spend_usd: number
+  /** The biggest spender with optimisation off. */
+  top_unoptimised: { agent_id: string; agent_name: string; spend_usd: number } | null
+}

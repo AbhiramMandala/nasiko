@@ -29,6 +29,18 @@ describe('TokenOps page', () => {
     expect(within(table).queryByText(liveAgent.name)).toBeNull()
   })
 
+  it('shows the token optimisation preview, labelled as sample data', async () => {
+    renderApp('/tokenops?open=optimise')
+    const panel = await section('Savings on optimised agents')
+    expect(within(panel).getByText('Preview · sample data')).toBeInTheDocument()
+    expect(within(panel).getByText('18.7%')).toBeInTheDocument()
+    expect(within(panel).getAllByRole('row')).toHaveLength(5)
+    expect(within(panel).getByRole('link', { name: /Turn on for an agent/ })).toHaveAttribute(
+      'href',
+      '/agents',
+    )
+  })
+
   it('shows one page loader under the sticky bar on a cold load; a window change keeps the panels', async () => {
     server.use(
       http.get(`*${FINOPS}/dashboard`, async () => {

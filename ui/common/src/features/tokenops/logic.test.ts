@@ -25,6 +25,7 @@ import {
   fmtUtcTime,
 } from '@/lib/format'
 import { traceLink } from './links'
+import { SAMPLE_OPTIMISATION, summarizeOptimisation } from './optimisation'
 import { isRealDate } from '@/lib/search'
 import { tokenopsSearchSchema } from './search'
 import { MAX_BUCKETS, toTimeline, zeroFillTimeline } from './series'
@@ -800,5 +801,48 @@ describe('UTC date formatters', () => {
     expect(fmtUtcTime(iso)).toBe('00:05')
     expect(fmtUtcTime(iso, true)).toBe('00:05:09')
     expect(fmtUtcDayTime(iso)).toBe('Mar 4 00:05')
+  })
+})
+
+describe('summarizeOptimisation', () => {
+  it('totals the sample and sorts agents by tokens saved', () => {
+    const s = summarizeOptimisation(SAMPLE_OPTIMISATION)
+    expect(s.rows.map((r) => r.name)).toEqual([
+      'Support Bot',
+      'Research Agent',
+      'Code Reviewer',
+      'Doc Writer',
+    ])
+    expect(s.tokensBefore).toBe(12_900_000)
+    expect(s.tokensSaved).toBe(2_410_000)
+    expect(fmtPct(s.savedPct)).toBe('18.7%')
+    expect(s.costSaved).toBe(199)
+    expect(Math.round(s.costSavedPct)).toBe(11)
+    expect(s.rows[0].barPct).toBe(100)
+    expect(s.unoptimisedCount).toBe(18)
+    expect(s.unoptimisedSpend).toBe(3204)
+  })
+
+  it('never divides by zero', () => {
+    const s = summarizeOptimisation({
+      agents: [
+        {
+          agent_id: 'a',
+          agent_name: 'A',
+          calls: 0,
+          input_tokens_before: 0,
+          input_tokens_after: 0,
+          est_cost_saved_usd: 0,
+        },
+      ],
+      total_agents: 1,
+      fleet_spend_usd: 0,
+      optimised_spend_usd: 0,
+      top_unoptimised: null,
+    })
+    expect([s.savedPct, s.costSavedPct, s.optimisedSharePct, s.rows[0].barPct]).toEqual([
+      0, 0, 0, 0,
+    ])
+    expect(s.unoptimisedCount).toBe(0)
   })
 })

@@ -36,7 +36,7 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { meQuery } from '@/lib/api/auth'
 import { ApiError } from '@/lib/api/client'
 import { env } from '@/lib/env'
-import { fmtLocalTime, fmtShortDay } from '@/lib/format'
+import { fmtLocalTime, fmtPct, fmtShortDay } from '@/lib/format'
 import { prefersReducedMotion, useMediaQuery } from '@/lib/useMediaQuery'
 import { useFrozenNow, useReturnTick } from '@/lib/useReturnTick'
 import {
@@ -67,6 +67,8 @@ import { DayPanel } from './components/DayPanel'
 import { Disclosure } from '@/components/shared/disclosure'
 import { KpiStrip } from './components/KpiStrip'
 import { MonthHero } from './components/MonthHero'
+import { OptimisationPanel } from './components/OptimisationPanel'
+import { SAMPLE_OPTIMISATION, summarizeOptimisation } from './optimisation'
 import { PageHeader } from '@/components/shared/page-header'
 import { PanelError } from '@/components/shared/panel'
 import { PageLoader } from '@/components/shared/page-loader'
@@ -79,6 +81,8 @@ import { TracesDrawer } from './components/TracesDrawer'
 export type SetSearch = (patch: Partial<TokenopsSearch>, opts?: { replace?: boolean }) => void
 
 const ALL = '__all'
+// ponytail: sample until the savings endpoint exists (optimisation.ts).
+const optimisation = summarizeOptimisation(SAMPLE_OPTIMISATION)
 
 export function TokenopsPage({
   search,
@@ -542,6 +546,16 @@ export function TokenopsPage({
                   }
                 />
               ) : null}
+            </Disclosure>
+
+            <Disclosure
+              id="optimise"
+              title="Token optimisation"
+              hint={`${optimisation.optimisedCount} of ${optimisation.totalAgents} agents · ${fmtPct(optimisation.savedPct)} tokens saved`}
+              open={isOpen('optimise')}
+              onToggle={() => toggle('optimise')}
+            >
+              <OptimisationPanel data={optimisation} />
             </Disclosure>
 
             <Disclosure
