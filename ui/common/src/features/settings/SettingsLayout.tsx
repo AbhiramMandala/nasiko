@@ -1,7 +1,7 @@
 /**
  * The Settings module (plans/feat-settings.md §1), around each of its pages, laid out as nasiko-cloud-rs
  * (`origin/development` a4853db4) lays it out: a left column titled Settings with collapsible groups, the page beside
- * it. The rows are `ui/oss/navigation.js` `MODULE_NAVS.settings` plus `ui/ee/web/nav-ext-ee.js`:
+ * it. The rows are the core's `MODULE_NAVS.settings` plus whatever an edition layer appends:
  * - Workspace: General, (EE: Orchestrator), Flow limits, Registry. `/settings?section=`.
  * - Security: (EE: Single sign-on), Secrets (`/settings/secrets`).
  * A layer's rows come from the `settingsSections` slot, placed after the row they name. A member sees only Secrets:

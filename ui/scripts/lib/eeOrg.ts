@@ -1,5 +1,5 @@
 /**
- * The EE org seed (plans/feat-live-contract.md §8), created through nasiko-server-ee's admin APIs as the superuser, so
+ * The enterprise org seed (plans/feat-live-contract.md §8), created through that server's admin APIs as the superuser, so
  * the EE contract records a real org: two `seed-` users, a root unit with a child, a lead and a member, and one unit
  * grant on a seed agent. API facts at ea233d20 (ee/server/src/org_units.rs, oss/server/src/users/routes.rs):
  * - `POST /api/users` {username, email, role} → 201 {id, access_key, access_secret}; the secret is also the password.

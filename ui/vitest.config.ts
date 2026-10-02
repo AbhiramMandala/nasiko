@@ -37,7 +37,9 @@ export default defineConfig({
         'common/src/test/**',
         '**/mocks/**',
         '**/*.gen.ts',
-        'ee/web/src/weave/core/**',
+        // Vendored, framework-free, and not ours to cover. Matched by shape
+        // rather than by edition path: a published config names no edition.
+        '**/src/weave/core/**',
         '**/main.tsx',
       ],
       thresholds: { lines: 60, statements: 60, functions: 60, branches: 60 },

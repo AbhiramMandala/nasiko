@@ -22,7 +22,7 @@ function readMockSignedOut(): boolean | null {
 }
 
 export async function startMocks(cfg: EnvConfig): Promise<void> {
-  // The edition's own mocks answer first (EE: as nasiko-server-ee); this module is reached only by the mock-mode
+  // The edition's own mocks answer first, each as its own server would; this module is reached only by the mock-mode
   // dynamic import, so they never ship in a live bundle.
   const handlers =
     cfg.mode === 'mock'

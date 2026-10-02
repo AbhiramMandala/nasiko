@@ -42,6 +42,12 @@ dist-ssr
 # live-contract recorder state (plans/feat-live-contract.md §5)
 .live/
 
+# Coverage and incremental-build output. `npm run coverage` writes ~556 files
+# into coverage/ and `tsc -b` leaves *.tsbuildinfo; neither was ignored, so a
+# plain `git add -A` after running the checks swept them into the commit.
+coverage/
+*.tsbuildinfo
+
 # Playwright
 test-results/
 playwright-report/

@@ -187,7 +187,7 @@ export const MOCK_VARIANTS = [
   'trace-500',
   'scan-fail',
   // Harnesses page (plan §7): each forces one state the page must handle. The OSS build is the OSS case, and the EE
-  // build's mocks answer as nasiko-server-ee does, so neither edition is a variant (docs/lab-vs-react-migration-review.md
+  // build's mocks answer as its own server does, so neither edition is a variant (docs/lab-vs-react-migration-review.md
   // §10.5).
   'usage-404',
   // A coded 404 below the landing: served by the EE layer's mocks (the OSS endpoint only ever answers "self").

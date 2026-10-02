@@ -89,7 +89,7 @@ async function replay(f: Fixture, e: Endpoint) {
   const at = Date.parse(f.recorded_at)
   vi.setSystemTime(at)
   const { seed, harness } = seedsFor(f.anchor)
-  // EE fixtures replay in the ee project, whose mocks answer as nasiko-server-ee; the seed member as a plain member of
+  // An edition's fixtures replay in its own project, whose mocks answer as its server would; the seed member as a plain member of
   // the harness seed's org.
   configureMocks({
     seed,
