@@ -4,7 +4,7 @@
  * rail does: the same nav in a full-height column beside the rail from 1024 px, a sheet opened from above the page
  * below that. The page scrolls in its own column (the shell fills the viewport on /settings, as on /chat). The rows
  * are nasiko-cloud-rs (`origin/development` a4853db4) `ui/oss/navigation.js` `MODULE_NAVS.settings` plus
- * `ui/ee/web/nav-ext-ee.js`:
+ * whatever an edition layer appends:
  * - Workspace: General, (EE: Orchestrator), Flow limits, Registry. `/settings?section=`.
  * - Security: (EE: Single sign-on), Secrets (`/settings/secrets`), Chat context (`/settings/chat-context`; nasiko-cloud-rs
  *   `35c749af`, every user's own).
