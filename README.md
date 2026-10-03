@@ -196,8 +196,8 @@ miss:
 
 | Variable                     | Purpose                                                                                                                                                                                                                    |
 | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `AGENT_JWT_SECRET`           | Signs the short-lived per-request router JWTs. Empty ⇒ every router request is rejected with 401 (fail-closed).                                                                                                            |
-| `CODING_AGENT_OTLP_ENDPOINT` | OTLP/HTTP JSON base endpoint for the telemetry outbox worker (the server appends `/v1/traces` and `/v1/logs`). Unset leaves ingested receipts pending and starts no worker, so coding-agent traces never reach Tempo/Loki. |
+| `AGENT_JWT_SECRET` | Required for local coding-agent routing, including custom LLM configs. Signs agent identity tokens separately from user-login JWTs and provider credentials. Missing/empty ⇒ `/api/agents/{id}/llm-token` returns 503; gateway authentication fails closed. |
+| `CODING_AGENT_OTLP_ENDPOINT` | Server-side OTLP/HTTP export for coding-agent telemetry. Compose already sets `http://otel-collector:4318`; for a host-run server with local infra, set `http://localhost:4318` in `server/.env`. Unset leaves receipts pending without an export worker. |
 
 
 ## Features
@@ -356,10 +356,31 @@ cd nasiko
 cp .env.example .env
 ```
 
-Edit `.env` and set at minimum:
+Edit `.env` before starting:
 
-- `OPENAI_API_KEY`: your OpenAI key (used by the routing engine and injected into agents)
-- `ADMIN_PASSWORD`: password for the bootstrap admin account
+- `SECRETS_ENCRYPTION_KEY`: generate with `openssl rand -base64 32` (exactly 32 decoded bytes).
+- `JWT_SECRET`: generate with `openssl rand -base64 48` for user-login tokens.
+- `AGENT_JWT_SECRET`: generate a **separate** value with `openssl rand -base64 48`. Required for
+  local coding-agent LLM routing (`nasiko connect claude|codex|opencode --config <name>`), including
+  custom LLM configs. Keep this signing secret on the server; clients obtain short-lived tokens.
+- `ADMIN_USERNAME` / `ADMIN_PASSWORD`: first-login credentials; replace the demo password.
+- `OPENAI_API_KEY`: a real provider key for the default OpenAI-backed routing/chat setup. Local
+  coding agents using a custom LLM config can instead use its stored provider credentials; those
+  credentials do **not** replace `AGENT_JWT_SECRET`.
+
+Keep the supplied `S3_*` credentials aligned with the bundled RustFS service. They are development
+credentials, not automatically generated secrets. Do not regenerate `SECRETS_ENCRYPTION_KEY` on
+routine restarts: existing encrypted secrets need the same key.
+
+**No manual telemetry URLs are needed for Compose.** It sets `TEMPO_URL`, `LOKI_URL`,
+`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_COLLECTOR_ENDPOINT`, and `CODING_AGENT_OTLP_ENDPOINT`, as well as
+`DATABASE_URL`, `REDIS_URL`, `S3_ENDPOINT`, `MCP_GATEWAY_PUBLIC_URL`, `LLM_GATEWAY_BASE_URL`, and
+`DOCKER_AGENT_NETWORK`. These Compose `environment` entries override `.env` values. Local coding
+clients connect to `http://localhost:8080` (or your reachable server URL), not the Docker-only
+`http://server:8080` address.
+
+After editing an existing `.env`, run `docker compose up -d` to recreate the server with the new
+values; `docker compose restart` alone does not reload its environment.
 
 ### 2. Start the platform
 
@@ -636,11 +657,13 @@ never holds a third-party credential: it authenticates to the gateway, and the g
 tool with the user's stored connection.
 
 > A complete working example of everything in this section and the next is in
-> [`agents/general-assistant/`](agents/general-assistant/). It's a Python `a2a-sdk` agent
-> that uses whatever MCP tools it is granted, asks the user instead of guessing, and pauses for tool
-> approvals. Deploy it with `nasiko upload agents/general-assistant`. Then type
-> `hitl input test`, `hitl auth test`, `hitl options test` or `hitl multiselect test` to check the
-> HITL wiring without an LLM key.
+> [`agents/general-assistant-1.1.1.zip`](agents/general-assistant-1.1.1.zip). It's a Python
+> `a2a-sdk` agent that uses whatever MCP tools it is granted, asks the user instead of guessing,
+> and pauses for tool approvals. Deploy it with
+> `nasiko upload agents/general-assistant-1.1.1.zip`. Then type `hitl input test`, `hitl auth test`,
+> `hitl options test` or `hitl multiselect test` to check the HITL wiring without an LLM key.
+> Version 1.1.1 pins `opentelemetry-util-genai==1.1b0`: version 1.2b0 breaks the OpenAI
+> instrumentor's import, leaving request traces visible but LLM token usage missing from TokenOps.
 
 **1. What the platform injects.** At deploy time every agent container gets two env vars
 (when `MCP_GATEWAY_PUBLIC_URL` is set on the server, which compose does for you):
@@ -833,10 +856,11 @@ with `POST /api/hitl/{id}/resolve`. The body depends on the request kind:
 
 ## Environment Variables
 
-Everything is env-driven through a single `Config` struct (`config/src/lib.rs`); required keys fail
-fast at startup. When running via `docker compose`, the infrastructure URLs (`DATABASE_URL`,
-`REDIS_URL`, `S3_ENDPOINT`, OTel/Tempo/Loki, agent network) are set automatically by
-`docker-compose.yml`. See `[.env.example](.env.example)` for every variable with descriptions.
+Configuration is env-driven; startup-required keys are validated separately from feature-specific
+requirements such as local coding-agent routing. See [.env.example](.env.example) for the Compose
+quick start and [server/.env.example](server/.env.example) for the detailed reference.
+`docker-compose.yml` supplies infrastructure and telemetry URLs and the agent network; do not
+replace those with host-local addresses in the Compose setup.
 
 
 | Variable                                                                       | Purpose                                                       | Default                           |
@@ -845,15 +869,16 @@ fast at startup. When running via `docker compose`, the infrastructure URLs (`DA
 | `SECRETS_ENCRYPTION_KEY`                                                       | Base64 32-byte AES-256-GCM key                                | **required**                      |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD`                                            | Bootstrap admin account                                       | `admin` / `changeme`              |
 | `JWT_SECRET`                                                                   | JWT signing secret                                            | **required**                      |
-| `S3_BUCKET` / `S3_ACCESS_KEY` / `S3_SECRET_KEY` / `S3_REGION`                  | S3 storage for the OCI registry                               | set by compose                    |
+| `S3_BUCKET` / `S3_ACCESS_KEY` / `S3_SECRET_KEY` / `S3_REGION` | S3 settings; credentials must match RustFS | supplied by `.env.example`; `S3_SECRET_KEY` required |
+| `OCI_STORAGE_BUCKET` | Bucket for embedded OCI registry blobs/manifests | `nasiko-artifacts` (no override needed) |
 | `AGENT_RUNTIME`                                                                | Container runtime (`docker` in OSS)                           | `docker`                          |
 | `DATABASE_URL` / `REDIS_URL` / `S3_ENDPOINT`                                   | Infra connections                                             | set by compose                    |
 | `COMPOSIO_API_KEY`                                                             | Composio platform (MCP toolkits)                              | optional                          |
 | `SEED_TOOLKITS`                                                                | Composio toolkits to auto-register at boot                    | optional                          |
 | `MCP_GATEWAY_PUBLIC_URL`                                                       | Public URL injected into agents for the MCP gateway           | set by compose                    |
 | `SEED_AGENTS`                                                                  | Space-separated images auto-deployed at boot                  | optional                          |
-| `AGENT_JWT_SECRET`                                                             | Signs coding-agent LLM-router request tokens                  | **required for `nasiko connect`** |
-| `CODING_AGENT_OTLP_ENDPOINT`                                                   | OTLP/HTTP JSON endpoint for the coding-agent telemetry outbox | unset (worker disabled)           |
+| `AGENT_JWT_SECRET` | Signs agent LLM-router identity tokens, including custom config routing | **required for local coding-agent routing**; generate your own |
+| `CODING_AGENT_OTLP_ENDPOINT` | Server-side OTLP/HTTP export for coding-agent telemetry | set by Compose; host-run server must set it |
 | `ROUTER_MODEL` / `EMBEDDING_MODEL`                                             | Routing-engine models                                         | see `config/`                     |
 | `NASIKO_FLOW_MAX_DEPTH` / `NASIKO_FLOW_MAX_FAN_OUT` / `NASIKO_FLOW_MAX_TOKENS` | Flow-guard cascade limits                                     | see `config/`                     |
 
@@ -900,7 +925,7 @@ docs/           Design docs (architecture, protocol, conventions)
 | Agent upload -> `500 agents_owner_id_fkey`                         | Log out and back in, or `docker compose down -v && docker compose up -d` then log in fresh                                                                                                                       |
 | Server can't reach Postgres                                        | `docker compose up -d` and wait for `healthy`                                                                                                                                                                    |
 | Agent `Name or service not known` (Linux Docker)                   | Recreate with `--add-host host.docker.internal:host-gateway`                                                                                                                                                     |
-| `SEED_TOOLKITS is set but COMPOSIO_API_KEY is not` at startup      | Expected and harmless: `SEED_TOOLKITS` ships active by default in `.env.example`. Set `COMPOSIO_API_KEY` in `.env` to actually register Composio toolkits, or comment out `SEED_TOOLKITS` to silence the warning |
+| `SEED_TOOLKITS is set but COMPOSIO_API_KEY is not` at startup | `SEED_TOOLKITS` is optional and commented out in the template. If you enable it, also set `COMPOSIO_API_KEY`, or leave both unset if Composio is not needed. |
 
 
 ### Windows
