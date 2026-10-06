@@ -1,0 +1,252 @@
+{
+  "dataset": "synthetic-realistic-v1 (NOT human labels; do not compare numerically with winner's 86% on human labels)",
+  "n_total": 1200,
+  "n_train": 845,
+  "n_val": 169,
+  "n_test": 186,
+  "tuning": "threshold+regex_weight tuned on VAL only (thr=0.4, rw=0.0); TEST evaluated once",
+  "systems": {
+    "baseline_regex": {
+      "n": 186,
+      "accuracy": 0.7957,
+      "macro_p": 0.8024,
+      "macro_r": 0.6793,
+      "macro_f1": 0.7121,
+      "fallback_rate": 0.0,
+      "large_routed_pct": 58.6,
+      "avg_ms": 0.0115,
+      "confusion": {
+        "code_generation": {
+          "code_generation": 35,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 15
+        },
+        "code_understanding": {
+          "code_generation": 5,
+          "code_understanding": 9,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 10
+        },
+        "technical_design": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 23,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 0
+        },
+        "analytical_reasoning": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 38,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 0
+        },
+        "writing": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 26,
+          "factual_lookup": 0,
+          "general": 0
+        },
+        "factual_lookup": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 8,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 17,
+          "general": 0
+        },
+        "general": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 0
+        }
+      },
+      "est_cost_units_per_req": 6.27,
+      "est_latency_ms": 1220.4
+    },
+    "overlap_v1": {
+      "n": 186,
+      "accuracy": 1.0,
+      "macro_p": 0.8571,
+      "macro_r": 0.8571,
+      "macro_f1": 0.8571,
+      "fallback_rate": 0.0,
+      "large_routed_pct": 59.7,
+      "avg_ms": 0.0221,
+      "confusion": {
+        "code_generation": {
+          "code_generation": 50,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 0
+        },
+        "code_understanding": {
+          "code_generation": 0,
+          "code_understanding": 24,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 0
+        },
+        "technical_design": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 23,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 0
+        },
+        "analytical_reasoning": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 38,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 0
+        },
+        "writing": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 26,
+          "factual_lookup": 0,
+          "general": 0
+        },
+        "factual_lookup": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 25,
+          "general": 0
+        },
+        "general": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 0
+        }
+      },
+      "est_cost_units_per_req": 6.37,
+      "est_latency_ms": 1235.8
+    },
+    "improved_v2(rw=0.0,thr=0.4)": {
+      "n": 186,
+      "accuracy": 1.0,
+      "macro_p": 0.8571,
+      "macro_r": 0.8571,
+      "macro_f1": 0.8571,
+      "fallback_rate": 0.0,
+      "large_routed_pct": 59.7,
+      "avg_ms": 0.0482,
+      "confusion": {
+        "code_generation": {
+          "code_generation": 50,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 0
+        },
+        "code_understanding": {
+          "code_generation": 0,
+          "code_understanding": 24,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 0
+        },
+        "technical_design": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 23,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 0
+        },
+        "analytical_reasoning": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 38,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 0
+        },
+        "writing": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 26,
+          "factual_lookup": 0,
+          "general": 0
+        },
+        "factual_lookup": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 25,
+          "general": 0
+        },
+        "general": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 0
+        }
+      },
+      "est_cost_units_per_req": 6.37,
+      "est_latency_ms": 1235.8
+    }
+  },
+  "always_large_baseline": {
+    "est_cost_units_per_req": 10.0,
+    "est_latency_ms": 1800.0,
+    "accuracy": 1.0,
+    "note": "quality ceiling; cost ceiling"
+  },
+  "routing_value": {
+    "improved_vs_always_large_cost_saving_pct": 36.3,
+    "improved_routed_large_pct": 59.7,
+    "quality_proxy": "routing accuracy (correct tier); live answer quality needs LLM key \u2014 NOT measured"
+  }
+}

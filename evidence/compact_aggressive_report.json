@@ -1,0 +1,463 @@
+{
+  "n": 56,
+  "total_baseline": 24060,
+  "total_aggressive": 6457,
+  "avg_reduction_pct": 73.2,
+  "median_pct": 74.6,
+  "best_pct": 86.0,
+  "worst_pct": 0.0,
+  "semantic_preserved": 55,
+  "bypassed": 1,
+  "verdict": "ACCEPT as optional profile",
+  "tradeoff": "trims tool-description hint text; param semantics identical; less human context for ambiguous tools",
+  "rows": [
+    {
+      "name": "read_file",
+      "baseline": 487,
+      "aggressive": 118,
+      "reduction": 75.8,
+      "preserved": true,
+      "latency_ms": 0.0221
+    },
+    {
+      "name": "list_directory",
+      "baseline": 386,
+      "aggressive": 104,
+      "reduction": 73.1,
+      "preserved": true,
+      "latency_ms": 0.0106
+    },
+    {
+      "name": "search_code",
+      "baseline": 562,
+      "aggressive": 113,
+      "reduction": 79.9,
+      "preserved": true,
+      "latency_ms": 0.0098
+    },
+    {
+      "name": "write_file",
+      "baseline": 476,
+      "aggressive": 100,
+      "reduction": 79.0,
+      "preserved": true,
+      "latency_ms": 0.0075
+    },
+    {
+      "name": "edit_file",
+      "baseline": 838,
+      "aggressive": 149,
+      "reduction": 82.2,
+      "preserved": true,
+      "latency_ms": 0.0168
+    },
+    {
+      "name": "run_command",
+      "baseline": 411,
+      "aggressive": 107,
+      "reduction": 74.0,
+      "preserved": true,
+      "latency_ms": 0.0066
+    },
+    {
+      "name": "run_tests",
+      "baseline": 408,
+      "aggressive": 106,
+      "reduction": 74.0,
+      "preserved": true,
+      "latency_ms": 0.0062
+    },
+    {
+      "name": "update_instructions",
+      "baseline": 943,
+      "aggressive": 132,
+      "reduction": 86.0,
+      "preserved": true,
+      "latency_ms": 0.0113
+    },
+    {
+      "name": "prune_instructions",
+      "baseline": 438,
+      "aggressive": 87,
+      "reduction": 80.1,
+      "preserved": true,
+      "latency_ms": 0.0045
+    },
+    {
+      "name": "github_repo_info",
+      "baseline": 386,
+      "aggressive": 104,
+      "reduction": 73.1,
+      "preserved": true,
+      "latency_ms": 0.0064
+    },
+    {
+      "name": "github_actions_runs",
+      "baseline": 415,
+      "aggressive": 107,
+      "reduction": 74.2,
+      "preserved": true,
+      "latency_ms": 0.0054
+    },
+    {
+      "name": "docker_hub_search",
+      "baseline": 352,
+      "aggressive": 95,
+      "reduction": 73.0,
+      "preserved": true,
+      "latency_ms": 0.0044
+    },
+    {
+      "name": "check_endpoint",
+      "baseline": 376,
+      "aggressive": 90,
+      "reduction": 76.1,
+      "preserved": true,
+      "latency_ms": 0.0044
+    },
+    {
+      "name": "web_search",
+      "baseline": 351,
+      "aggressive": 88,
+      "reduction": 74.9,
+      "preserved": true,
+      "latency_ms": 0.0045
+    },
+    {
+      "name": "crates_io",
+      "baseline": 480,
+      "aggressive": 131,
+      "reduction": 72.7,
+      "preserved": true,
+      "latency_ms": 0.009
+    },
+    {
+      "name": "crate_info",
+      "baseline": 390,
+      "aggressive": 101,
+      "reduction": 74.1,
+      "preserved": true,
+      "latency_ms": 0.0059
+    },
+    {
+      "name": "npm_search",
+      "baseline": 333,
+      "aggressive": 88,
+      "reduction": 73.6,
+      "preserved": true,
+      "latency_ms": 0.004
+    },
+    {
+      "name": "npm_package",
+      "baseline": 429,
+      "aggressive": 102,
+      "reduction": 76.2,
+      "preserved": true,
+      "latency_ms": 0.0057
+    },
+    {
+      "name": "pypi_package",
+      "baseline": 317,
+      "aggressive": 89,
+      "reduction": 71.9,
+      "preserved": true,
+      "latency_ms": 0.0041
+    },
+    {
+      "name": "github_readme",
+      "baseline": 354,
+      "aggressive": 90,
+      "reduction": 74.6,
+      "preserved": true,
+      "latency_ms": 0.004
+    },
+    {
+      "name": "exchange_rates",
+      "baseline": 499,
+      "aggressive": 107,
+      "reduction": 78.6,
+      "preserved": true,
+      "latency_ms": 0.0068
+    },
+    {
+      "name": "crypto_price",
+      "baseline": 375,
+      "aggressive": 92,
+      "reduction": 75.5,
+      "preserved": true,
+      "latency_ms": 0.0043
+    },
+    {
+      "name": "crypto_search",
+      "baseline": 348,
+      "aggressive": 91,
+      "reduction": 73.9,
+      "preserved": true,
+      "latency_ms": 0.0041
+    },
+    {
+      "name": "crypto_market",
+      "baseline": 291,
+      "aggressive": 92,
+      "reduction": 68.4,
+      "preserved": true,
+      "latency_ms": 0.0043
+    },
+    {
+      "name": "public_holidays",
+      "baseline": 452,
+      "aggressive": 110,
+      "reduction": 75.7,
+      "preserved": true,
+      "latency_ms": 0.0062
+    },
+    {
+      "name": "working_days",
+      "baseline": 574,
+      "aggressive": 127,
+      "reduction": 77.9,
+      "preserved": true,
+      "latency_ms": 0.0075
+    },
+    {
+      "name": "world_clock",
+      "baseline": 383,
+      "aggressive": 92,
+      "reduction": 76.0,
+      "preserved": true,
+      "latency_ms": 0.0047
+    },
+    {
+      "name": "country_info",
+      "baseline": 399,
+      "aggressive": 89,
+      "reduction": 77.7,
+      "preserved": true,
+      "latency_ms": 0.004
+    },
+    {
+      "name": "terraform_modules",
+      "baseline": 399,
+      "aggressive": 95,
+      "reduction": 76.2,
+      "preserved": true,
+      "latency_ms": 0.0045
+    },
+    {
+      "name": "terraform_provider",
+      "baseline": 532,
+      "aggressive": 110,
+      "reduction": 79.3,
+      "preserved": true,
+      "latency_ms": 0.0054
+    },
+    {
+      "name": "dns_lookup",
+      "baseline": 553,
+      "aggressive": 126,
+      "reduction": 77.2,
+      "preserved": true,
+      "latency_ms": 0.0088
+    },
+    {
+      "name": "ssl_check",
+      "baseline": 474,
+      "aggressive": 99,
+      "reduction": 79.1,
+      "preserved": true,
+      "latency_ms": 0.0057
+    },
+    {
+      "name": "ip_info",
+      "baseline": 352,
+      "aggressive": 82,
+      "reduction": 76.7,
+      "preserved": true,
+      "latency_ms": 0.0043
+    },
+    {
+      "name": "sec_filing_search",
+      "baseline": 729,
+      "aggressive": 143,
+      "reduction": 80.4,
+      "preserved": true,
+      "latency_ms": 0.0082
+    },
+    {
+      "name": "sec_company_filings",
+      "baseline": 448,
+      "aggressive": 95,
+      "reduction": 78.8,
+      "preserved": true,
+      "latency_ms": 0.0045
+    },
+    {
+      "name": "sec_company_search",
+      "baseline": 397,
+      "aggressive": 95,
+      "reduction": 76.1,
+      "preserved": true,
+      "latency_ms": 0.0046
+    },
+    {
+      "name": "federal_register",
+      "baseline": 662,
+      "aggressive": 138,
+      "reduction": 79.2,
+      "preserved": true,
+      "latency_ms": 0.0078
+    },
+    {
+      "name": "case_law_search",
+      "baseline": 569,
+      "aggressive": 105,
+      "reduction": 81.5,
+      "preserved": true,
+      "latency_ms": 0.0057
+    },
+    {
+      "name": "search_food",
+      "baseline": 734,
+      "aggressive": 734,
+      "reduction": 0.0,
+      "preserved": true,
+      "latency_ms": 0.0068
+    },
+    {
+      "name": "get_nutrition",
+      "baseline": 353,
+      "aggressive": 92,
+      "reduction": 73.9,
+      "preserved": true,
+      "latency_ms": 0.0046
+    },
+    {
+      "name": "open_food_facts",
+      "baseline": 354,
+      "aggressive": 93,
+      "reduction": 73.7,
+      "preserved": true,
+      "latency_ms": 0.004
+    },
+    {
+      "name": "compare_foods",
+      "baseline": 368,
+      "aggressive": 95,
+      "reduction": 74.2,
+      "preserved": true,
+      "latency_ms": 0.0053
+    },
+    {
+      "name": "arxiv_search",
+      "baseline": 596,
+      "aggressive": 158,
+      "reduction": 73.5,
+      "preserved": true,
+      "latency_ms": 0.0085
+    },
+    {
+      "name": "semantic_scholar",
+      "baseline": 534,
+      "aggressive": 117,
+      "reduction": 78.1,
+      "preserved": true,
+      "latency_ms": 0.007
+    },
+    {
+      "name": "semantic_scholar_paper",
+      "baseline": 413,
+      "aggressive": 103,
+      "reduction": 75.1,
+      "preserved": true,
+      "latency_ms": 0.0049
+    },
+    {
+      "name": "wikipedia_summary",
+      "baseline": 328,
+      "aggressive": 95,
+      "reduction": 71.0,
+      "preserved": true,
+      "latency_ms": 0.0039
+    },
+    {
+      "name": "search_books",
+      "baseline": 328,
+      "aggressive": 90,
+      "reduction": 72.6,
+      "preserved": true,
+      "latency_ms": 0.0039
+    },
+    {
+      "name": "search_repos",
+      "baseline": 247,
+      "aggressive": 90,
+      "reduction": 63.6,
+      "preserved": true,
+      "latency_ms": 0.0043
+    },
+    {
+      "name": "get_repo",
+      "baseline": 317,
+      "aggressive": 108,
+      "reduction": 65.9,
+      "preserved": true,
+      "latency_ms": 0.0066
+    },
+    {
+      "name": "get_readme",
+      "baseline": 253,
+      "aggressive": 78,
+      "reduction": 69.2,
+      "preserved": true,
+      "latency_ms": 0.0067
+    },
+    {
+      "name": "get_contents",
+      "baseline": 340,
+      "aggressive": 112,
+      "reduction": 67.1,
+      "preserved": true,
+      "latency_ms": 0.0065
+    },
+    {
+      "name": "top_stories",
+      "baseline": 223,
+      "aggressive": 84,
+      "reduction": 62.3,
+      "preserved": true,
+      "latency_ms": 0.0041
+    },
+    {
+      "name": "search_stories",
+      "baseline": 248,
+      "aggressive": 98,
+      "reduction": 60.5,
+      "preserved": true,
+      "latency_ms": 0.0053
+    },
+    {
+      "name": "get_item",
+      "baseline": 244,
+      "aggressive": 87,
+      "reduction": 64.3,
+      "preserved": true,
+      "latency_ms": 0.004
+    },
+    {
+      "name": "geocode",
+      "baseline": 273,
+      "aggressive": 100,
+      "reduction": 63.4,
+      "preserved": true,
+      "latency_ms": 0.0053
+    },
+    {
+      "name": "get_weather",
+      "baseline": 339,
+      "aggressive": 134,
+      "reduction": 60.5,
+      "preserved": true,
+      "latency_ms": 0.0082
+    }
+  ]
+}

@@ -1,0 +1,166 @@
+{
+  "method": "transparent templated dataset, family-separated split; regex is a Python PROXY of PR #240 patterns (authoritative: cargo test)",
+  "n_total": 1808,
+  "n_train": 1356,
+  "n_val": 226,
+  "n_test": 226,
+  "fallback_threshold_tuned_on_val": 0.7,
+  "honesty_note": "Labels derive from templates, so regex-proxy accuracy is optimistic. Independent human labels (like winner's 1806 with CV + leakage guard) are still required for a claim of beating 86%.",
+  "systems": {
+    "baseline_regex": {
+      "n_test": 226,
+      "accuracy": 0.9248,
+      "macro_precision": 0.9101,
+      "macro_recall": 0.9356,
+      "macro_f1": 0.8993,
+      "fallback_rate": 0.0,
+      "large_routed_pct": 54.0,
+      "avg_latency_ms": 0.0035,
+      "confusion_matrix": {
+        "code_generation": {
+          "code_generation": 50,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 5
+        },
+        "code_understanding": {
+          "code_generation": 0,
+          "code_understanding": 21,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 4
+        },
+        "technical_design": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 32,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 8
+        },
+        "analytical_reasoning": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 40,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 0
+        },
+        "writing": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 16,
+          "factual_lookup": 0,
+          "general": 0
+        },
+        "factual_lookup": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 40,
+          "general": 0
+        },
+        "general": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 10
+        }
+      }
+    },
+    "improved_overlap": {
+      "n_test": 226,
+      "accuracy": 1.0,
+      "macro_precision": 1.0,
+      "macro_recall": 1.0,
+      "macro_f1": 1.0,
+      "fallback_rate": 0.0088,
+      "large_routed_pct": 59.7,
+      "avg_latency_ms": 0.0118,
+      "confusion_matrix": {
+        "code_generation": {
+          "code_generation": 55,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 0
+        },
+        "code_understanding": {
+          "code_generation": 0,
+          "code_understanding": 25,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 0
+        },
+        "technical_design": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 40,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 0
+        },
+        "analytical_reasoning": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 40,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 0
+        },
+        "writing": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 16,
+          "factual_lookup": 0,
+          "general": 0
+        },
+        "factual_lookup": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 40,
+          "general": 0
+        },
+        "general": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 10
+        }
+      }
+    }
+  },
+  "reference_winner": {
+    "accuracy": 0.864,
+    "n": 1806,
+    "note": "PR #319 reported held-out 154; do not claim to beat without independent labels"
+  }
+}

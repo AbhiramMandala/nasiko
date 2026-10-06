@@ -1,0 +1,527 @@
+{
+  "method": "python measurement proxy (see docstring); authoritative tokens via cargo compact_tools_eval",
+  "n_tools": 56,
+  "n_compacted": 55,
+  "n_bypassed": 1,
+  "semantic_preserved": 55,
+  "semantic_accuracy_pct": 100.0,
+  "total_baseline_bytes": 24060,
+  "total_compact_bytes": 10521,
+  "avg_reduction_pct": 57.0,
+  "total_ratio_pct": 56.3,
+  "best_pct": 71.7,
+  "worst_pct": 23.1,
+  "median_pct": 59.1,
+  "avg_encode_ms": 0.0047,
+  "avg_decode_ms": 0.0054,
+  "wall_ms": 1.0,
+  "heuristic_token_note": "chars/4 estimate only, NOT o200k_base",
+  "est_baseline_tokens": 6015,
+  "est_compact_tokens": 2630,
+  "rows": [
+    {
+      "name": "read_file",
+      "baseline_bytes": 487,
+      "compact_bytes": 149,
+      "reduction_pct": 69.4,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "list_directory",
+      "baseline_bytes": 386,
+      "compact_bytes": 132,
+      "reduction_pct": 65.8,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "search_code",
+      "baseline_bytes": 562,
+      "compact_bytes": 221,
+      "reduction_pct": 60.7,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "write_file",
+      "baseline_bytes": 476,
+      "compact_bytes": 228,
+      "reduction_pct": 52.1,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "edit_file",
+      "baseline_bytes": 838,
+      "compact_bytes": 323,
+      "reduction_pct": 61.5,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "run_command",
+      "baseline_bytes": 411,
+      "compact_bytes": 152,
+      "reduction_pct": 63.0,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "run_tests",
+      "baseline_bytes": 408,
+      "compact_bytes": 166,
+      "reduction_pct": 59.3,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "update_instructions",
+      "baseline_bytes": 943,
+      "compact_bytes": 504,
+      "reduction_pct": 46.6,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "prune_instructions",
+      "baseline_bytes": 438,
+      "compact_bytes": 337,
+      "reduction_pct": 23.1,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "github_repo_info",
+      "baseline_bytes": 386,
+      "compact_bytes": 138,
+      "reduction_pct": 64.2,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "github_actions_runs",
+      "baseline_bytes": 415,
+      "compact_bytes": 167,
+      "reduction_pct": 59.8,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "docker_hub_search",
+      "baseline_bytes": 352,
+      "compact_bytes": 163,
+      "reduction_pct": 53.7,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "check_endpoint",
+      "baseline_bytes": 376,
+      "compact_bytes": 159,
+      "reduction_pct": 57.7,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "web_search",
+      "baseline_bytes": 351,
+      "compact_bytes": 168,
+      "reduction_pct": 52.1,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "crates_io",
+      "baseline_bytes": 480,
+      "compact_bytes": 206,
+      "reduction_pct": 57.1,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "crate_info",
+      "baseline_bytes": 390,
+      "compact_bytes": 142,
+      "reduction_pct": 63.6,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "npm_search",
+      "baseline_bytes": 333,
+      "compact_bytes": 150,
+      "reduction_pct": 55.0,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "npm_package",
+      "baseline_bytes": 429,
+      "compact_bytes": 141,
+      "reduction_pct": 67.1,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "pypi_package",
+      "baseline_bytes": 317,
+      "compact_bytes": 122,
+      "reduction_pct": 61.5,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "github_readme",
+      "baseline_bytes": 354,
+      "compact_bytes": 143,
+      "reduction_pct": 59.6,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "exchange_rates",
+      "baseline_bytes": 499,
+      "compact_bytes": 141,
+      "reduction_pct": 71.7,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "crypto_price",
+      "baseline_bytes": 375,
+      "compact_bytes": 149,
+      "reduction_pct": 60.3,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "crypto_search",
+      "baseline_bytes": 348,
+      "compact_bytes": 135,
+      "reduction_pct": 61.2,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "crypto_market",
+      "baseline_bytes": 291,
+      "compact_bytes": 120,
+      "reduction_pct": 58.8,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "public_holidays",
+      "baseline_bytes": 452,
+      "compact_bytes": 159,
+      "reduction_pct": 64.8,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "working_days",
+      "baseline_bytes": 574,
+      "compact_bytes": 189,
+      "reduction_pct": 67.1,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "world_clock",
+      "baseline_bytes": 383,
+      "compact_bytes": 144,
+      "reduction_pct": 62.4,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "country_info",
+      "baseline_bytes": 399,
+      "compact_bytes": 191,
+      "reduction_pct": 52.1,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "terraform_modules",
+      "baseline_bytes": 399,
+      "compact_bytes": 189,
+      "reduction_pct": 52.6,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "terraform_provider",
+      "baseline_bytes": 532,
+      "compact_bytes": 206,
+      "reduction_pct": 61.3,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "dns_lookup",
+      "baseline_bytes": 553,
+      "compact_bytes": 229,
+      "reduction_pct": 58.6,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "ssl_check",
+      "baseline_bytes": 474,
+      "compact_bytes": 194,
+      "reduction_pct": 59.1,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "ip_info",
+      "baseline_bytes": 352,
+      "compact_bytes": 151,
+      "reduction_pct": 57.1,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "sec_filing_search",
+      "baseline_bytes": 729,
+      "compact_bytes": 289,
+      "reduction_pct": 60.4,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "sec_company_filings",
+      "baseline_bytes": 448,
+      "compact_bytes": 228,
+      "reduction_pct": 49.1,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "sec_company_search",
+      "baseline_bytes": 397,
+      "compact_bytes": 177,
+      "reduction_pct": 55.4,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "federal_register",
+      "baseline_bytes": 662,
+      "compact_bytes": 291,
+      "reduction_pct": 56.0,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "case_law_search",
+      "baseline_bytes": 569,
+      "compact_bytes": 217,
+      "reduction_pct": 61.9,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "search_food",
+      "baseline_bytes": 734,
+      "compact_bytes": 734,
+      "reduction_pct": 0.0,
+      "compacted": false,
+      "bypass_reason": "unsupported_schema",
+      "preserved": true
+    },
+    {
+      "name": "get_nutrition",
+      "baseline_bytes": 353,
+      "compact_bytes": 150,
+      "reduction_pct": 57.5,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "open_food_facts",
+      "baseline_bytes": 354,
+      "compact_bytes": 162,
+      "reduction_pct": 54.2,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "compare_foods",
+      "baseline_bytes": 368,
+      "compact_bytes": 136,
+      "reduction_pct": 63.0,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "arxiv_search",
+      "baseline_bytes": 596,
+      "compact_bytes": 244,
+      "reduction_pct": 59.1,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "semantic_scholar",
+      "baseline_bytes": 534,
+      "compact_bytes": 205,
+      "reduction_pct": 61.6,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "semantic_scholar_paper",
+      "baseline_bytes": 413,
+      "compact_bytes": 177,
+      "reduction_pct": 57.1,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "wikipedia_summary",
+      "baseline_bytes": 328,
+      "compact_bytes": 157,
+      "reduction_pct": 52.1,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "search_books",
+      "baseline_bytes": 328,
+      "compact_bytes": 190,
+      "reduction_pct": 42.1,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "search_repos",
+      "baseline_bytes": 247,
+      "compact_bytes": 109,
+      "reduction_pct": 55.9,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "get_repo",
+      "baseline_bytes": 317,
+      "compact_bytes": 143,
+      "reduction_pct": 54.9,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "get_readme",
+      "baseline_bytes": 253,
+      "compact_bytes": 79,
+      "reduction_pct": 68.8,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "get_contents",
+      "baseline_bytes": 340,
+      "compact_bytes": 166,
+      "reduction_pct": 51.2,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "top_stories",
+      "baseline_bytes": 223,
+      "compact_bytes": 85,
+      "reduction_pct": 61.9,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "search_stories",
+      "baseline_bytes": 248,
+      "compact_bytes": 99,
+      "reduction_pct": 60.1,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "get_item",
+      "baseline_bytes": 244,
+      "compact_bytes": 114,
+      "reduction_pct": 53.3,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "geocode",
+      "baseline_bytes": 273,
+      "compact_bytes": 118,
+      "reduction_pct": 56.8,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    },
+    {
+      "name": "get_weather",
+      "baseline_bytes": 339,
+      "compact_bytes": 143,
+      "reduction_pct": 57.8,
+      "compacted": true,
+      "bypass_reason": "",
+      "preserved": true
+    }
+  ]
+}
