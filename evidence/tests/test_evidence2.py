@@ -10,6 +10,7 @@ from compact_bench import encode_tool
 from compact_aggressive import encode_aggressive, trim_desc
 
 CORPUS = HERE / "corpus_tools.json"
+REALISTIC_SOURCE = "synthetic-realistic-v2"
 
 
 class AggressiveTest(unittest.TestCase):
@@ -35,23 +36,38 @@ class AggressiveTest(unittest.TestCase):
 
 
 class RealisticHygieneTest(unittest.TestCase):
-    def test_realistic_file_labeled_and_split(self):
-        lines = (HERE / "classifier_realistic.jsonl").read_text(encoding="utf-8").splitlines()
-        self.assertGreaterEqual(len(lines), 1000)
-        splits = set()
-        for ln in lines[:50]:
-            it = json.loads(ln)
-            self.assertEqual(it["source"], "synthetic-realistic-v1")
-            self.assertIn(it["expected_route"], ("small", "large"))
-            splits.add(it["split"])
-        self.assertEqual(splits, {"train", "val", "test"})
+    def _load(self):
+        return [json.loads(ln) for ln in
+                (HERE / "classifier_realistic.jsonl").read_text(encoding="utf-8").splitlines()]
 
-    def test_test_ids_disjoint_from_train(self):
-        tr, te = set(), set()
-        for ln in (HERE / "classifier_realistic.jsonl").read_text(encoding="utf-8").splitlines():
-            it = json.loads(ln)
-            (tr if it["split"] == "train" else te if it["split"] == "test" else set()).add(it["id"])
-        self.assertEqual(tr & te, set())
+    def test_realistic_file_labeled_and_split(self):
+        items = self._load()
+        self.assertGreaterEqual(len(items), 1000)
+        by_type = {}
+        for it in items:
+            self.assertEqual(it["source"], REALISTIC_SOURCE)
+            self.assertIn(it["expected_route"], ("small", "large"))
+            by_type.setdefault(it["type"], set()).add(it["split"])
+        # every type represented in every split (quotas, not source ordering)
+        for t, splits in by_type.items():
+            self.assertEqual(splits, {"train", "val", "test"}, t)
+        self.assertGreaterEqual(
+            sum(1 for i in items if i["type"] == "general"), 100)
+
+    def test_families_disjoint_across_splits(self):
+        fams = {}
+        for it in self._load():
+            fams.setdefault(it["family"], set()).add(it["split"])
+        for fam, splits in fams.items():
+            self.assertEqual(len(splits), 1, f"family {fam} spans splits")
+
+    def test_adversarial_present_in_test(self):
+        items = self._load()
+        adv_test = [i for i in items if i["split"] == "test" and i["adversarial"]]
+        self.assertGreaterEqual(len(adv_test), 10,
+                                "fallback path unevaluated: no adversarial test cases")
+        gens = [i for i in items if i["split"] == "test" and i["type"] == "general"]
+        self.assertGreater(len(gens), 0, "no general cases in test")
 
     def test_demo_reads_reports_not_hardcoded(self):
         src = (HERE / "demo.py").read_text(encoding="utf-8")
@@ -60,6 +76,41 @@ class RealisticHygieneTest(unittest.TestCase):
         # no headline percentages hard-coded in demo
         self.assertNotIn("57.8%", src)
         self.assertNotIn("73.2%", src)
+
+
+class FallbackRoutingTest(unittest.TestCase):
+    """Low confidence must route large WITHOUT relabeling the prediction."""
+
+    def _run(self, stub, items, thr=0.4):
+        from classifier_realistic_eval import evaluate
+        return evaluate(items, stub, thr)
+
+    def _items(self):
+        return [
+            {"question": "q1", "type": "writing", "expected_route": "small"},
+            {"question": "q2", "type": "writing", "expected_route": "small"},
+            {"question": "q3", "type": "code_generation", "expected_route": "large"},
+            {"question": "q4", "type": "code_generation", "expected_route": "large"},
+        ]
+
+    def test_low_confidence_fallback_routes_large(self):
+        # Stub always predicts writing with low confidence: every request
+        # must fall back to the large tier while the prediction stays writing.
+        res = self._run(lambda q: ("writing", 0.1), self._items())
+        self.assertEqual(res["fallback_rate"], 1.0)
+        self.assertEqual(res["large_routed_pct"], 100.0)
+        # accuracy is computed on the PRESERVED prediction (2/4 writing)
+        self.assertEqual(res["accuracy"], 0.5)
+        # route accuracy: the 2 code_generation items route correctly via
+        # fallback, the 2 writing items do not
+        self.assertEqual(res["route_accuracy"], 0.5)
+
+    def test_genuine_general_is_not_fallback(self):
+        # High-confidence general prediction: no fallback, routes small.
+        res = self._run(lambda q: ("general", 0.9), self._items())
+        self.assertEqual(res["fallback_rate"], 0.0)
+        self.assertEqual(res["large_routed_pct"], 0.0)
+        self.assertEqual(res["route_accuracy"], 0.5)  # only the 2 small items
 
 
 if __name__ == "__main__":

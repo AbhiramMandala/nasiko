@@ -1,24 +1,31 @@
 """Transparent classifier evaluation (stdlib only, reproducible).
 
-Dataset: 2,100 templated questions across 7 request types
-(code_generation, code_understanding, technical_design, analytical_reasoning,
-writing, factual_lookup, general) x 300 each, built from paraphrase families.
-Split BY FAMILY (no leakage): 70% train / 15% val / 15% test.
+Dataset: templated questions across 7 request types, generated from paraphrase
+families (one family = one template; its slot phrasings stay together).
+Split is FAMILY-DISJOINT and stratified per type with a fixed seed: no family
+appears in more than one of train/validation/test, so test templates are
+genuinely unseen during training and tuning.
 
 Systems:
 - baseline_regex: Python port of PR #240/CATEGORY_PATTERNS heuristics
   (keyword votes, tie -> earlier category wins, default general).
   Labeled as PROXY — authoritative numbers need `cargo test -p nasiko-llm-router`.
 - improved: word-overlap scorer trained on TRAIN only (per-type word weights
-  + complexity heuristic + confidence), with low-confidence fallback to general.
+  + complexity heuristic + confidence), with low-confidence fallback.
 
-Metrics: accuracy, macro precision/recall/F1, confusion matrix, fallback rate,
-routing split (small vs large), all on TEST (unseen families).
+Fallback routes to the LARGE tier (strong model): predicted_type is preserved
+as the classifier's actual prediction while route records where the request
+goes. Cost uses the route, never the predicted class.
+
+Metrics: accuracy, macro precision/recall/F1 (on predicted types), route
+accuracy, confusion matrix, fallback rate, routing split (small vs large),
+all on TEST (unseen families).
 
 Outputs: evidence/classifier_report.json
 """
 import json
 import math
+import random
 import re
 import time
 from collections import Counter
@@ -62,55 +69,91 @@ PATTERNS = [
 COMPILED = [(t, [re.compile(p, re.I) for p in ps]) for t, ps in PATTERNS]
 
 
+LARGE_TYPES = ("code_generation", "technical_design", "analytical_reasoning")
+
+SPLIT_SEED = 20261007
+PER_FAMILY_CAP = 64
+
+
+def route_for_type(predicted_type):
+    """Tier routing: hard/complex types go large, the rest go small."""
+    return "large" if predicted_type in LARGE_TYPES else "small"
+
+
 def build_dataset():
+    """One family = one template; all of its phrasings share a family id."""
     examples = []  # (family_id, text, label)
     variants = ["{}", "please {}", "{} please", "can you {}",
                 "{} now", "{} thanks", "urgently {}", "{} asap"]
     for fid, (label, tmps, slots) in enumerate(FAMILIES):
-        keys = list(slots)
-        # cartesian-ish expansion, deterministic, 320 per family-template group
-        combos = []
-
-        def rec(i, cur):
-            if i == len(keys):
-                combos.append(dict(cur))
-                return
-            for v in slots[keys[i]]:
-                cur[keys[i]] = v
-                rec(i + 1, cur)
-        rec(0, {})
-        n = 0
-        for t in tmps:
+        for ti, t in enumerate(tmps):
+            fam = f"f{fid}t{ti}"
+            keys = re.findall(r"\{(\w+)\}", t)
+            combos = _expand_combos(keys, slots)
+            n = 0
             for c in combos:
                 try:
-                    q = t.format(**{k: c[k] for k in re.findall(r"\{(\w+)\}", t)})
+                    q = t.format(**c)
                 except KeyError:
                     continue
-                for vi, v in enumerate(variants):
-                    examples.append((f"f{fid}v{vi}", v.format(q), label))
+                for v in variants:
+                    examples.append((fam, v.format(q), label))
                     n += 1
-                    if n >= 320:
+                    if n >= PER_FAMILY_CAP:
                         break
-                if n >= 320:
+                if n >= PER_FAMILY_CAP:
                     break
-            if n >= 320:
-                break
     return examples
 
 
-def split_by_family(examples):
-    # Strict split by phrasing variant (suffix vN): train on v0-v5,
-    # val on v6, test on v7 — test phrasing is never seen in train.
-    train, val, test = [], [], []
-    for f, q, l in examples:
-        m = re.search(r"v(\d+)$", f)
-        v = int(m.group(1)) if m else 0
-        if v <= 5:
-            train.append((f, q, l))
-        elif v == 6:
-            val.append((f, q, l))
+def _expand_combos(keys, slots):
+    combos = []
+
+    def rec(i, cur):
+        if i == len(keys):
+            combos.append(dict(cur))
+            return
+        for v in slots.get(keys[i], [""]):
+            cur[keys[i]] = v
+            rec(i + 1, cur)
+    rec(0, {})
+    return combos
+
+
+def split_by_family(examples, seed=SPLIT_SEED):
+    """Family-disjoint stratified split: no family in more than one split.
+
+    Families are grouped by type, shuffled with a fixed seed, and divided
+    ~70/15/15 per type (minimum one validation and one test family per type
+    when the type has enough families). Deterministic across runs.
+    """
+    fams_by_type = {}
+    for f, _q, l in examples:
+        fams_by_type.setdefault(l, set()).add(f)
+    rnd = random.Random(seed)
+    train_f, val_f, test_f = set(), set(), set()
+    for label in sorted(fams_by_type):
+        fams = sorted(fams_by_type[label])
+        rnd.shuffle(fams)
+        n = len(fams)
+        if n >= 4:
+            n_test = max(1, round(n * 0.15))
+            n_val = max(1, round(n * 0.15))
+        elif n == 3:
+            n_test, n_val = 1, 1
+        elif n == 2:
+            n_test, n_val = 1, 0
         else:
-            test.append((f, q, l))
+            n_test, n_val = 0, 0
+        test_f.update(fams[:n_test])
+        val_f.update(fams[n_test:n_test + n_val])
+        train_f.update(fams[n_test + n_val:])
+    assert train_f.isdisjoint(val_f), "family leak: train/val share families"
+    assert train_f.isdisjoint(test_f), "family leak: train/test share families"
+    assert val_f.isdisjoint(test_f), "family leak: val/test share families"
+    train = [(f, q, l) for f, q, l in examples if f in train_f]
+    val = [(f, q, l) for f, q, l in examples if f in val_f]
+    test = [(f, q, l) for f, q, l in examples if f in test_f]
     return train, val, test
 
 
@@ -177,20 +220,26 @@ def main() -> int:
     data = build_dataset()
     train, val, test = split_by_family(data)
     weights, total = train_overlap_model(train)
-    # tune fallback threshold on VAL (never test)
-    best_thr, best_f1 = 0.5, -1
+    # Tune the fallback threshold on VAL (never test): maximize route
+    # accuracy (fallback routes large), tie-break toward less fallback.
+    # The threshold cannot change predicted types — only routes.
+    best_thr, best_key = 0.5, None
     for thr in [0.4, 0.5, 0.6, 0.7]:
-        preds = []
-        for _, q, _ in val:
+        ok, fb = 0, 0
+        for _, q, l in val:
             lab, conf, _ = overlap_predict(q, weights, total)
-            preds.append(lab if conf >= thr else "general")
-        _, _, _, f1 = prf([l for _, _, l in val], preds)
-        if f1 > best_f1:
-            best_f1, best_thr = f1, thr
-    # evaluate on TEST
+            route = "large" if conf < thr else route_for_type(lab)
+            ok += route == route_for_type(l)
+            fb += conf < thr
+        key = (ok / max(1, len(val)), -fb / max(1, len(val)))
+        if best_key is None or key > best_key:
+            best_key, best_thr = key, thr
+    # evaluate on TEST. predicted_type is the classifier's actual output
+    # (used for accuracy/F1); route is where the request goes — fallback
+    # ALWAYS routes large, never relabels the request as general.
     results = {}
     for name in ["baseline_regex", "improved_overlap"]:
-        y_true, y_pred, confs, fallbacks = [], [], [], 0
+        y_true, y_pred, routes, routes_ok, confs, fallbacks = [], [], [], [], [], 0
         t0 = time.perf_counter()
         for _, q, l in test:
             if name == "baseline_regex":
@@ -198,12 +247,12 @@ def main() -> int:
                 fb = False
             else:
                 p, c, _ = overlap_predict(q, weights, total)
-                if c < best_thr:
-                    p, fb = "general", True
-                else:
-                    fb = False
+                fb = c < best_thr
+            route = "large" if fb else route_for_type(p)
             y_true.append(l)
             y_pred.append(p)
+            routes.append(route)
+            routes_ok.append(route == route_for_type(l))
             confs.append(c)
             fallbacks += fb
         ms = (time.perf_counter() - t0) * 1000 / max(1, len(test))
@@ -211,14 +260,14 @@ def main() -> int:
         cm = {t: {p: 0 for p in TYPES} for t in TYPES}
         for t, p in zip(y_true, y_pred):
             cm[t][p] += 1
-        # routing: code/analytical/design -> large, else small (documented heuristic)
-        large = sum(1 for p in y_pred if p in ("code_generation", "analytical_reasoning", "technical_design"))
+        large = sum(1 for r in routes if r == "large")
         results[name] = {
             "n_test": len(test),
             "accuracy": round(acc, 4),
             "macro_precision": round(mp, 4),
             "macro_recall": round(mr, 4),
             "macro_f1": round(mf, 4),
+            "route_accuracy": round(sum(routes_ok) / max(1, len(routes_ok)), 4),
             "fallback_rate": round(fallbacks / max(1, len(test)), 4),
             "large_routed_pct": round(100 * large / max(1, len(test)), 1),
             "avg_latency_ms": round(ms, 4),

@@ -978,14 +978,15 @@
       "type": "object",
       "properties": {
         "query": {
-          "type": "string"
+          "type": "string",
+          "description": "Search query, e.g. 'Isaac Asimov', 'history of Rome', or 'machine learning'"
         }
       },
       "required": [
         "query"
       ]
     },
-    "source": "books\\tools.go [derived]"
+    "source": "books\\tools.go"
   },
   {
     "name": "search_repos",
@@ -994,14 +995,15 @@
       "type": "object",
       "properties": {
         "query": {
-          "type": "string"
+          "type": "string",
+          "description": "Search keywords, e.g. 'rust async runtime' or 'a2a protocol'"
         }
       },
       "required": [
         "query"
       ]
     },
-    "source": "github\\tools.go [derived]"
+    "source": "github\\tools.go"
   },
   {
     "name": "get_repo",
@@ -1010,13 +1012,12 @@
       "type": "object",
       "properties": {
         "owner": {
-          "type": "string"
+          "type": "string",
+          "description": "Repository owner, e.g. 'golang'"
         },
         "repo": {
-          "type": "string"
-        },
-        "query": {
-          "type": "string"
+          "type": "string",
+          "description": "Repository name, e.g. 'go'"
         }
       },
       "required": [
@@ -1024,7 +1025,7 @@
         "repo"
       ]
     },
-    "source": "github\\tools.go [derived]"
+    "source": "github\\tools.go"
   },
   {
     "name": "get_readme",
@@ -1033,13 +1034,12 @@
       "type": "object",
       "properties": {
         "owner": {
-          "type": "string"
+          "type": "string",
+          "description": "Repository owner"
         },
         "repo": {
-          "type": "string"
-        },
-        "query": {
-          "type": "string"
+          "type": "string",
+          "description": "Repository name"
         }
       },
       "required": [
@@ -1047,7 +1047,7 @@
         "repo"
       ]
     },
-    "source": "github\\tools.go [derived]"
+    "source": "github\\tools.go"
   },
   {
     "name": "get_contents",
@@ -1056,13 +1056,16 @@
       "type": "object",
       "properties": {
         "owner": {
-          "type": "string"
+          "type": "string",
+          "description": "Repository owner"
         },
         "repo": {
-          "type": "string"
+          "type": "string",
+          "description": "Repository name"
         },
-        "query": {
-          "type": "string"
+        "path": {
+          "type": "string",
+          "description": "Path inside the repo, e.g. 'src/net'. Empty string means the repo root."
         }
       },
       "required": [
@@ -1070,23 +1073,17 @@
         "repo"
       ]
     },
-    "source": "github\\tools.go [derived]"
+    "source": "github\\tools.go"
   },
   {
     "name": "top_stories",
     "description": "Get the current top stories from the Hacker News front page.",
     "parameters": {
       "type": "object",
-      "properties": {
-        "query": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "query"
-      ]
+      "properties": {},
+      "required": []
     },
-    "source": "hackernews\\tools.go [derived]"
+    "source": "hackernews\\tools.go"
   },
   {
     "name": "search_stories",
@@ -1094,18 +1091,16 @@
     "parameters": {
       "type": "object",
       "properties": {
-        "id": {
-          "type": "string"
-        },
         "query": {
-          "type": "string"
+          "type": "string",
+          "description": "Search keywords, e.g. 'Rust' or 'AI agents'"
         }
       },
       "required": [
-        "id"
+        "query"
       ]
     },
-    "source": "hackernews\\tools.go [derived]"
+    "source": "hackernews\\tools.go"
   },
   {
     "name": "get_item",
@@ -1113,13 +1108,16 @@
     "parameters": {
       "type": "object",
       "properties": {
-        "query": {
-          "type": "string"
+        "id": {
+          "type": "integer",
+          "description": "Hacker News item ID"
         }
       },
-      "required": []
+      "required": [
+        "id"
+      ]
     },
-    "source": "hackernews\\tools.go [derived]"
+    "source": "hackernews\\tools.go"
   },
   {
     "name": "geocode",
@@ -1128,17 +1126,15 @@
       "type": "object",
       "properties": {
         "location": {
-          "type": "string"
-        },
-        "label": {
-          "type": "string"
+          "type": "string",
+          "description": "Place name, e.g. 'Paris' or 'Tokyo, Japan'"
         }
       },
       "required": [
         "location"
       ]
     },
-    "source": "weather\\tools.go [derived]"
+    "source": "weather\\tools.go"
   },
   {
     "name": "get_weather",
@@ -1147,16 +1143,16 @@
       "type": "object",
       "properties": {
         "latitude": {
-          "type": "number"
+          "type": "number",
+          "description": "Latitude"
         },
         "longitude": {
-          "type": "number"
-        },
-        "location": {
-          "type": "string"
+          "type": "number",
+          "description": "Longitude"
         },
         "label": {
-          "type": "string"
+          "type": "string",
+          "description": "Human-readable place name from geocode"
         }
       },
       "required": [
@@ -1164,6 +1160,6 @@
         "longitude"
       ]
     },
-    "source": "weather\\tools.go [derived]"
+    "source": "weather\\tools.go"
   }
 ]

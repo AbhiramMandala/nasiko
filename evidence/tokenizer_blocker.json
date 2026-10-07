@@ -3,12 +3,12 @@
   "date": "2026-10-06",
   "machine": "Windows, no cargo/rustc/rustup, no MSVC link.exe/cl.exe, no VS Build Tools",
   "workspace_requirement": "edition = \"2024\" (Rust 1.85+), native deps need MSVC linkers on Windows",
-  "evaluator": "cargo run --release -p nasiko-llm-router --example compact_tools_eval (EVAL_SET + OUT env)",
+  "evaluator": "cargo run --release -p nasiko-llm-router --example compact_tools_eval (EVAL_SET + OUT env) \u2014 example absent from this checkout (llm-router/examples/ holds only mint_token.rs)",
   "eval_set_reachable": true,
   "missing": [
     "rust-toolchain",
     "msvc-linkers",
-    "full pr-214 checkout (tool-compact/, llm-router/)"
+    "the evaluator example itself (not in this checkout)"
   ],
   "unblock_steps": [
     "winget install Rustlang.Rustup + VS Build Tools C++ workload",
@@ -16,5 +16,5 @@
     "curl -fsSL https://registry.nasiko.dev/r/nasiko/compact-tools-eval -o /tmp/compact-tools-eval.json",
     "EVAL_SET=/tmp/compact-tools-eval.json OUT=/tmp/out.jsonl cargo run --release -p nasiko-llm-router --example compact_tools_eval"
   ],
-  "standing_result": "57.0% avg byte reduction on 56 real tools (exact, reproducible via python evidence/run_all.py)"
+  "standing_result": "58.6% avg byte reduction on 56 real tools (exact, reproducible via python evidence/run_all.py)"
 }

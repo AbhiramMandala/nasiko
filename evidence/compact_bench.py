@@ -12,14 +12,18 @@ Methodology (honest, documented):
   Unsupported schemas ($ref, oneOf/anyOf beyond nullable, patternProperties,
   const, bad names, etc.) BYPASS compaction (fail-closed): compacted=False
   and baseline bytes are used for that tool — same semantics as the Rust crate.
-- Semantic preservation: normalized comparison of
-  (name, required-set, param types, enum values). Field *descriptions* are
-  elided by design (documented in PR #214); tool descriptions are kept.
-  A case passes iff names + required + types + enums round-trip exactly.
+- Semantic preservation: REAL round-trip per tool —
+  encode(original) -> compact string -> decode(compact) -> normalized compare
+  against normalized(original), plus an exact tool-description match (the
+  encoder keeps descriptions verbatim). Field *descriptions* inside parameters
+  are elided by design (documented in PR #214); a corrupted compact string
+  fails preservation by construction. Comparing the original against itself
+  would prove nothing, so the check MUST depend on the decoded string.
 - Tokens: reported as bytes/chars (exact) PLUS a clearly-labeled heuristic
-  estimate (chars/4). This is NOT o200k_base. Authoritative token numbers must
-  come from `cargo run -p nasiko-llm-router --example compact_tools_eval`
-  with EVAL_SET (see README). We never claim o200k_base numbers from Python.
+  estimate (chars/4). This is NOT o200k_base, and no Rust tokenizer is run
+  here: the Rust-side evaluator (`llm-router/examples/compact_tools_eval`)
+  does not exist in this checkout, so exact tokenizer counts cannot be
+  produced by this benchmark (see Limitations / tokenizer_blocker.json).
 - Latency: time.perf_counter around encode/decode per tool, averaged.
 
 Outputs: evidence/compact_report.json + printed table.
@@ -143,6 +147,176 @@ def normalize_tool(tool):
     return (tool["name"], req, types, enums)
 
 
+class CompactDecodeError(ValueError):
+    """A compact line that does not parse (fail-closed: never guess)."""
+
+
+def _split_top_level(text, sep=","):
+    """Split on sep at nesting depth 0 of [...] and {...}."""
+    parts, depth, cur = [], 0, []
+    for ch in text:
+        if ch in "[{":
+            depth += 1
+            cur.append(ch)
+        elif ch in "]}":
+            if depth == 0:
+                raise CompactDecodeError("unbalanced brackets")
+            depth -= 1
+            cur.append(ch)
+        elif ch == sep and depth == 0:
+            parts.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    if depth != 0:
+        raise CompactDecodeError("unbalanced brackets")
+    parts.append("".join(cur))
+    return parts
+
+
+def _parse_compact_type(text):
+    """Parse one compact type expression; return (schema, rest).
+
+    Raises CompactDecodeError on anything malformed — the decoder never
+    guesses, so a corrupted line fails instead of validating wrong calls.
+    """
+    s = text.strip()
+    for lit, schema in (("datetime", {"type": "string", "format": "date-time"}),
+                        ("date", {"type": "string", "format": "date"}),
+                        ("str", {"type": "string"}),
+                        ("int", {"type": "integer"}),
+                        ("num", {"type": "number"}),
+                        ("bool", {"type": "boolean"})):
+        if s == lit or s.startswith(lit + ",") or s.startswith(lit + "}") or s.startswith(lit + "]"):
+            return dict(schema), s[len(lit):]
+    if s.startswith("["):
+        inner, rest = _parse_compact_type(s[1:])
+        rest = rest.strip()
+        if not rest.startswith("]"):
+            raise CompactDecodeError("bad array type")
+        return {"type": "array", "items": inner}, rest[1:]
+    if s.startswith("{"):
+        depth, i = 0, 0
+        while i < len(s):
+            if s[i] in "[{":
+                depth += 1
+            elif s[i] in "]}":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        if depth != 0 or i >= len(s) or s[i] != "}":
+            raise CompactDecodeError("bad object type")
+        inner = s[1:i]
+        props, req = {}, []
+        if inner.strip():
+            for part in _split_top_level(inner):
+                pname, pschema, reqd = _parse_param(part)
+                props[pname] = pschema
+                if reqd:
+                    req.append(pname)
+        return {"type": "object", "properties": props, "required": req}, s[i + 1:]
+    # enum: top-level '|' separated values (this function always receives
+    # exactly one type expression: bracketed forms are consumed above).
+    if "|" in s:
+        vals = s.split("|")
+        if len(vals) > 1 and all(v and NAME_RE.match(v) for v in vals):
+            return {"type": "string", "enum": vals}, ""
+        raise CompactDecodeError("bad enum type")
+    # Bare word: the encoder renders a single-value enum ["v"] as just "v"
+    # (it cannot collide with the fixed type literals, which are matched above).
+    if s and NAME_RE.match(s):
+        return {"type": "string", "enum": [s]}, ""
+    raise CompactDecodeError(f"unknown type in {s!r}")
+
+
+def _parse_param(part):
+    """Parse `name[?]:type`; return (name, schema, required)."""
+    part = part.strip()
+    m = re.match(r"^([A-Za-z0-9_.\-]+)(\?)?:(.*)$", part, re.DOTALL)
+    if not m:
+        raise CompactDecodeError(f"bad parameter {part!r}")
+    schema, rest = _parse_compact_type(m.group(3))
+    if rest.strip():
+        raise CompactDecodeError(f"trailing text in {part!r}")
+    return m.group(1), schema, m.group(2) is None
+
+
+def decode_tool(line):
+    """Parse a compact tool line back into a tool dict.
+
+    Returns (tool, "") on success, (None, reason) on malformed input.
+    The preservation check MUST go through this function: comparing the
+    original against itself proves nothing.
+    """
+    if not isinstance(line, str) or not line.strip():
+        return None, "empty_line"
+    try:
+        return _decode_tool_inner(line)
+    except RecursionError:
+        return None, "too_deep"
+    except CompactDecodeError as e:
+        return None, f"bad_line: {e}"
+
+
+def _decode_tool_inner(line):
+    m = re.match(r"^([A-Za-z0-9_.\-]+)\(", line)
+    if not m:
+        return None, "bad_tool_name"
+    name = m.group(1)
+    # find the matching close paren for the params list
+    depth, i = 0, m.end() - 1
+    while i < len(line):
+        if line[i] == "(":
+            depth += 1
+        elif line[i] == ")":
+            depth -= 1
+            if depth == 0:
+                break
+        i += 1
+    if depth != 0 or i >= len(line):
+        return None, "unbalanced_params"
+    params_text, rest = line[m.end():i], line[i + 1:]
+    if rest and not rest.startswith(" - "):
+        return None, "bad_description_separator"
+    desc = rest[3:] if rest else ""
+    props, req = {}, []
+    if params_text.strip():
+        try:
+            parts = _split_top_level(params_text)
+        except CompactDecodeError as e:
+            return None, f"bad_params: {e}"
+        for part in parts:
+            try:
+                pname, pschema, reqd = _parse_param(part)
+            except CompactDecodeError as e:
+                return None, f"bad_params: {e}"
+            if pname in props:
+                return None, "duplicate_param"
+            props[pname] = pschema
+            if reqd:
+                req.append(pname)
+    return {"name": name, "description": desc,
+            "parameters": {"type": "object", "properties": props, "required": req}}, ""
+
+
+def check_preserved(original, line):
+    """True iff decode(encode(original)) is semantically identical.
+
+    Compares normalize_tool(decoded) against normalize_tool(original) plus an
+    exact description match (the encoder keeps tool descriptions verbatim).
+    A corrupted compact string fails here by construction.
+    """
+    decoded, reason = decode_tool(line)
+    if decoded is None:
+        return False, f"decode_failed: {reason}"
+    if normalize_tool(decoded) != normalize_tool(original):
+        return False, "schema_mismatch"
+    if decoded.get("description", "") != (original.get("description") or ""):
+        return False, "description_mismatch"
+    return True, ""
+
+
 def main() -> int:
     tools = json.loads(CORPUS.read_text(encoding="utf-8"))
     rows = []
@@ -159,21 +333,25 @@ def main() -> int:
         line, reason = encode_tool(tool)
         t2 = time.perf_counter()
         if line is None:
-            compact_bytes = baseline  # fail-closed bypass: send native
-            ok, bypass = True, True
+            # Fail-closed bypass: the tool is sent natively, so there is no
+            # compact string to decode and no decode timing to report.
+            compact_bytes = baseline
+            ok, bypass, decode_ran = True, True, False
+            reason = f"bypass: {reason}"
         else:
             compact_bytes = line.encode("utf-8")
-            # decode check: re-derive normalized form from the line by
-            # re-running map_type on the original (renderer is pure function
-            # of normalized form, so equality of normalized forms == round-trip)
-            ok = normalize_tool(tool)[0] == tool["name"]  # name always kept
-            # full check: normalized types must be non-None for compacted tools
-            norm = normalize_tool(tool)
-            ok = all(v is not None for v in norm[2].values())
+            # REAL round-trip: decode the compact string we just produced and
+            # compare normalized(decoded) against normalized(original).
+            # Comparing the original against itself would prove nothing.
+            t3 = time.perf_counter()
+            ok, preserve_reason = check_preserved(tool, line)
+            t4 = time.perf_counter()
+            dec_times.append((t4 - t3) * 1000)
+            decode_ran = True
+            if not ok:
+                reason = f"not_preserved: {preserve_reason}"
             bypass = False
-        t3 = time.perf_counter()
         enc_times.append((t2 - t1) * 1000)
-        dec_times.append((t3 - t2) * 1000)
         total_base += len(baseline)
         total_compact += len(compact_bytes) if line else len(baseline)
         if bypass:
@@ -193,8 +371,12 @@ def main() -> int:
     compacted_rows = [r for r in rows if r["compacted"]]
     reds = sorted(r["reduction_pct"] for r in compacted_rows) if compacted_rows else [0]
     avg_red = round(sum(r["reduction_pct"] for r in rows) / len(rows), 1) if rows else 0
+    # decode_ms averages ONLY tools where a real decode ran. Bypassed tools
+    # have no compact string, so they contribute no decode timing.
+    # compact_aggressive.py uses the same decode path, so both profiles prove
+    # preservation instead of asserting it.
     report = {
-        "method": "python measurement proxy (see docstring); authoritative tokens via cargo compact_tools_eval",
+        "method": "encode -> decode -> normalize-compare per tool; decode_ms covers decoded tools only (see decode_measured_n). Authoritative tokens via the Rust-side evaluator (not in this checkout; see Limitations).",
         "n_tools": len(tools),
         "n_compacted": len(compacted_rows),
         "n_bypassed": bypassed,
@@ -210,7 +392,8 @@ def main() -> int:
         "worst_pct": min(reds),
         "median_pct": round(reds[len(reds) // 2], 1),
         "avg_encode_ms": round(sum(enc_times) / len(enc_times), 4),
-        "avg_decode_ms": round(sum(dec_times) / len(dec_times), 4),
+        "avg_decode_ms": round(sum(dec_times) / len(dec_times), 4) if dec_times else 0,
+        "decode_measured_n": len(dec_times),
         "wall_ms": round(wall_ms, 1),
         "heuristic_token_note": "chars/4 estimate only, NOT o200k_base",
         "est_baseline_tokens": total_base // 4,

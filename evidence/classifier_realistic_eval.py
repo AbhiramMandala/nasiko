@@ -8,7 +8,13 @@ Systems:
 - baseline_regex: same Python proxy of PR #240 patterns (unchanged).
 - overlap_v1: unigram log-odds trained on realistic TRAIN (port of current idea).
 - improved_v2: bigrams + 5-char stems + shape tokens + regex votes + length/
-  difficulty signals, hybrid with regex; confidence-gated fallback to large.
+  difficulty signals, hybrid with regex; confidence-gated fallback.
+
+Fallback routes to the LARGE tier (strong model): predicted_type is preserved
+as the classifier's actual prediction while route records where the request
+goes. A genuine "general" prediction (high confidence) routes small and is
+recorded with fallback=False; a low-confidence fallback routes large with
+fallback=True. Cost and latency use the route, never the predicted class.
 
 Routing value (documented estimates, NOT real billing):
 - cost units: small=1, large=10 per request (relative, o200k-era ratio placeholder).
@@ -129,27 +135,38 @@ def prf(y_true, y_pred):
     return acc, sum(ps) / len(ps), sum(rs) / len(rs), sum(f1s) / len(f1s)
 
 
+def route_for_type(predicted_type):
+    """Tier routing: hard/complex types go large, the rest go small."""
+    return "large" if predicted_type in LARGE_TYPES else "small"
+
+
 def evaluate(items, predict_fn, thr):
-    yt, yp, fb = [], [], 0
+    """predicted_type stays the classifier output; route applies the policy.
+
+    Low confidence -> fallback=True, route="large" (strong model).
+    The request is NOT relabeled as general: a genuine general prediction
+    keeps fallback=False and routes small.
+    """
+    yt, yp, routes, routes_ok, fb = [], [], [], [], 0
     t0 = time.perf_counter()
     for it in items:
         p, c = predict_fn(it["question"])
-        if c < thr:
-            p, f = "general", True  # safe fallback: route ambiguous to small/general, log it
-            # for ROUTE-level fallback (stronger model) see routing value below
-        else:
-            f = False
+        f = c < thr
+        route = "large" if f else route_for_type(p)
         yt.append(it["type"])
         yp.append(p)
+        routes.append(route)
+        routes_ok.append(route == it["expected_route"])
         fb += f
     ms = (time.perf_counter() - t0) * 1000 / max(1, len(items))
     acc, mp, mr, mf = prf(yt, yp)
     cm = {t: {p: 0 for p in TYPES} for t in TYPES}
     for t, p in zip(yt, yp):
         cm[t][p] += 1
-    route_large = sum(1 for p in yp if p in LARGE_TYPES)
+    route_large = sum(1 for r in routes if r == "large")
     return {"n": len(items), "accuracy": round(acc, 4), "macro_p": round(mp, 4),
             "macro_r": round(mr, 4), "macro_f1": round(mf, 4),
+            "route_accuracy": round(sum(routes_ok) / max(1, len(routes_ok)), 4),
             "fallback_rate": round(fb / max(1, len(items)), 4),
             "large_routed_pct": round(100 * route_large / max(1, len(items)), 1),
             "avg_ms": round(ms, 4), "confusion": cm}
@@ -164,12 +181,14 @@ def main() -> int:
     w1, t1 = train_model(train, feats_unigram)
     w2, t2 = train_model(train, feats_v2)
 
-    # Tune ONLY on val: threshold + regex_weight for v2
+    # Tune ONLY on val: threshold + regex_weight for v2. The objective is
+    # route accuracy (fallback routes large); tie-break toward less fallback.
+    # Thresholds cannot change predicted types — only routes.
     best = None
     for thr in [0.4, 0.5, 0.6, 0.7]:
         for rw in [0.0, 1.0, 2.0]:
             r = evaluate(val, lambda q, _w=w2, _t=t2, _rw=rw: predict(q, _w, _t, feats_v2, _rw)[:2], thr)
-            key = (r["macro_f1"], -r["fallback_rate"])
+            key = (r["route_accuracy"], -r["fallback_rate"])
             if best is None or key > best[0]:
                 best = (key, thr, rw, r)
     _, thr_star, rw_star, val_r = best
@@ -192,10 +211,16 @@ def main() -> int:
     v2 = systems[v2name]
     savings = round(100 * (1 - v2["est_cost_units_per_req"] / 10), 1)
 
+    sources = {i.get("source", "unknown") for i in items}
+    source_label = sorted(sources)[0] if len(sources) == 1 else "mixed-sources"
     report = {
-        "dataset": "synthetic-realistic-v1 (NOT human labels; do not compare numerically with winner's 86% on human labels)",
+        "dataset": f"{sorted(sources)} (NOT human labels; do not compare numerically with winner's 86% on human labels)",
+        "source": source_label,
         "n_total": len(items), "n_train": len(train), "n_val": len(val), "n_test": len(test),
         "tuning": f"threshold+regex_weight tuned on VAL only (thr={thr_star}, rw={rw_star}); TEST evaluated once",
+        "threshold": thr_star,
+        "regex_weight": rw_star,
+        "fallback_policy": "low confidence -> fallback=True, route=large (strong model); predicted_type preserved",
         "systems": systems,
         "always_large_baseline": always_large,
         "routing_value": {
@@ -207,7 +232,7 @@ def main() -> int:
     REPORT.write_text(json.dumps(report, indent=2), encoding="utf-8")
     for k, v in systems.items():
         print(f"{k}: acc={v['accuracy']} F1={v['macro_f1']} fb={v['fallback_rate']} large%={v['large_routed_pct']} cost={v['est_cost_units_per_req']}u lat={v['est_latency_ms']}ms")
-    print(f"always-large: cost=10.0u lat=1800ms; improved saves ~{savings}% cost (accuracy proxy {v2['accuracy']})")
+    print(f"always-large: cost=10.0u lat=1800ms; improved saves ~{savings}% cost (route-accuracy proxy {v2['route_accuracy']})")
     print(f"report -> {REPORT}")
     return 0
 

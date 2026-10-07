@@ -11,13 +11,17 @@ Labeling rubric (documented, deterministic):
 Routing labels follow the item's primary type; mixed-intent items are labeled
 by the HARDER half (documented choice: route up on ambiguity).
 
-Split by item id hash (stable): 70% train / 15% val / 15% test.
-Test ids are locked; eval scripts must tune ONLY on val.
+Coverage (enforced, not ordered): per-type quotas guarantee every type —
+especially general/ambiguous — is represented. Terse/ambiguous templates are
+tagged adversarial=True.
+
+Family = one template. Splits are assigned per family (stratified per type,
+seeded) so no template's phrasings straddle train/val/test. Test ids are
+locked; eval scripts must tune ONLY on val.
 
 Output: evidence/classifier_realistic.jsonl (one JSON object per line).
-Target: 600 items.
 """
-import hashlib
+
 import json
 import random
 from pathlib import Path
@@ -25,122 +29,164 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 OUT = HERE / "classifier_realistic.jsonl"
 
+SOURCE = "synthetic-realistic-v2"
+SPLIT_SEED = 20261007
+TOTAL_TARGET = 1200
+MIN_GENERAL = 150
+MIN_ADVERSARIAL_IN_TEST = 10
+
 LARGE = {"code_generation", "technical_design", "analytical_reasoning"}
 
-# (type, phrasing templates) — deliberately varied: terse, polite, typo'd, mixed, pasted-code
+# (type, template, adversarial). Adversarial = terse/ambiguous/mixed items
+# that exercise the fallback path.
 BANK = [
-    ("code_generation", [
-        "write me a python func that dedupes a csv by id",
-        "pls fix the null email crash in clean_csv_file",
-        "implement retry with backoff for the coin api call",
-        "refactor dispatchTool switch into a map, keep errors as content",
-        "my script throws KeyError on rates['EUR'] — handle it",
-        "generate rust code for streaming decode of <<call >> markers",
-        "here's my code:\n{CODE}\nwhy does it drop the last row?",
-        "add validation for required fields before deploy",
-        "write a test for split-marker rejoin at every position",
-        "convert this curl into a python function with timeout",
-    ]),
-    ("code_understanding", [
-        "what does build_and_deploy actually do on re-import?",
-        "explain refresh_secrets reinjection like i'm new",
-        "walk me through the StreamDecoder state machine",
-        "this function returns 502 — what path causes that?",
-        "what's the difference between route_model and route_model_with?",
-    ]),
-    ("technical_design", [
-        "how should i design the eval harness so numbers can't be faked?",
-        "api design for opt-in compact profile without breaking callers?",
-        "trade-offs: byte vs token measurement for the PR claim",
-        "design a fail-closed bypass that never guesses",
-        "should the threshold live in config or code? argue both",
-    ]),
-    ("analytical_reasoning", [
-        "compare 46.4% vs 57.0% claims — are the denominators even the same?",
-        "analyze why overlap hits 100% on templates but would drop live",
-        "pros and cons of chars/4 heuristic vs real tokenizer",
-        "reason step by step: is 1 bypass out of 56 a safety win or gap?",
-        "which is more honest: lower measured number or higher estimate?",
-    ]),
-    ("writing", [
-        "draft the PR description section for methodology",
-        "rewrite this benchmark paragraph more clearly",
-        "summarize the evidence report for a judge in 5 lines",
-        "write a release note for the aggressive profile experiment",
-    ]),
-    ("factual_lookup", [
-        "what's the default port nasiko server runs on",
-        "when did PR 214 open",
-        "who owns the nasiko repo org",
-        "define fail-closed in one line",
-        "what does ECE measure",
-    ]),
-    ("general", [
-        "hi", "thanks!", "what can you do?", "good morning",
-        "lol that chart is nice", "ok run it again",
-    ]),
-    # adversarial / mixed / ambiguous
-    ("code_generation", [
-        "write AND explain a validator for AgentCard.json",  # mixed: harder half wins
-        "urgent: deploy failing, fix it and tell me why",  # mixed
-        "pls",  # terse ambiguous -> labeled general? NO: keep as code? ambiguous items below
-    ]),
-    ("general", [
-        "pls", "?", "deploy?", "hmm", "asdf test",
-        "write something",  # ambiguous short
-    ]),
+    ("code_generation", "write me a python func that dedupes a csv by id", False),
+    ("code_generation", "pls fix the null email crash in clean_csv_file", False),
+    ("code_generation", "implement retry with backoff for the coin api call", False),
+    ("code_generation", "refactor dispatchTool switch into a map, keep errors as content", False),
+    ("code_generation", "my script throws KeyError on rates['EUR'] — handle it", False),
+    ("code_generation", "generate rust code for streaming decode of <<call >> markers", False),
+    ("code_generation", "here's my code:\n{CODE}\nwhy does it drop the last row?", False),
+    ("code_generation", "add validation for required fields before deploy", False),
+    ("code_generation", "write a test for split-marker rejoin at every position", False),
+    ("code_generation", "convert this curl into a python function with timeout", False),
+    ("code_understanding", "what does build_and_deploy actually do on re-import?", False),
+    ("code_understanding", "explain refresh_secrets reinjection like i'm new", False),
+    ("code_understanding", "walk me through the StreamDecoder state machine", False),
+    ("code_understanding", "this function returns 502 — what path causes that?", False),
+    ("code_understanding", "what's the difference between route_model and route_model_with?", False),
+    ("technical_design", "how should i design the eval harness so numbers can't be faked?", False),
+    ("technical_design", "api design for opt-in compact profile without breaking callers?", False),
+    ("technical_design", "trade-offs: byte vs token measurement for the PR claim", False),
+    ("technical_design", "design a fail-closed bypass that never guesses", False),
+    ("technical_design", "should the threshold live in config or code? argue both", False),
+    ("analytical_reasoning", "compare 46.4% vs 57.0% claims — are the denominators even the same?", False),
+    ("analytical_reasoning", "analyze why overlap hits 100% on templates but would drop live", False),
+    ("analytical_reasoning", "pros and cons of chars/4 heuristic vs real tokenizer", False),
+    ("analytical_reasoning", "reason step by step: is 1 bypass out of 56 a safety win or gap?", False),
+    ("analytical_reasoning", "which is more honest: lower measured number or higher estimate?", False),
+    ("writing", "draft the PR description section for methodology", False),
+    ("writing", "rewrite this benchmark paragraph more clearly", False),
+    ("writing", "summarize the evidence report for a judge in 5 lines", False),
+    ("writing", "write a release note for the aggressive profile experiment", False),
+    ("factual_lookup", "what's the default port nasiko server runs on", False),
+    ("factual_lookup", "when did PR 214 open", False),
+    ("factual_lookup", "who owns the nasiko repo org", False),
+    ("factual_lookup", "define fail-closed in one line", False),
+    ("factual_lookup", "what does ECE measure", False),
+    ("general", "hi", False),
+    ("general", "thanks for the help", False),
+    ("general", "what can you do?", False),
+    ("general", "good morning", False),
+    ("general", "lol that chart is nice", False),
+    ("general", "ok run it again", False),
+    ("code_generation", "write AND explain a validator for AgentCard.json", True),
+    ("code_generation", "urgent: deploy failing, fix it and tell me why", True),
+    ("code_generation", "pls", True),
+    ("general", "pls", True),
+    ("general", "?", True),
+    ("general", "deploy?", True),
+    ("general", "hmm", True),
+    ("general", "asdf test", True),
+    ("general", "write something", True),
 ]
 
 CODE = "def clean(rows):\n    seen=set()\n    out=[]\n    for r in rows:\n        if r[0] in seen: continue\n        seen.add(r[0]); out.append(r)\n    return out"
 
+PREFIXES = ["", "please ", "hey, ", "quick q: ", "urgent: ", "fyi "]
+SUFFIXES = ["", " please", "?", " thanks!", " asap", " now?"]
 
-def stable_split(iid: str) -> str:
-    h = int(hashlib.sha256(iid.encode()).hexdigest(), 16) % 100
-    if h < 70:
-        return "train"
-    if h < 85:
-        return "val"
-    return "test"
+
+def family_of(idx):
+    return f"rx-t{idx:03d}"
+
+
+def assign_splits():
+    """Family -> split, stratified per type with a fixed seed.
+
+    Every type keeps representation in train/val/test; no family appears in
+    more than one split. Deterministic across runs.
+    """
+    by_type = {}
+    for idx, (tlabel, _t, _a) in enumerate(BANK):
+        by_type.setdefault(tlabel, []).append(idx)
+    rnd = random.Random(SPLIT_SEED)
+    fam_split = {}
+    for tlabel in sorted(by_type):
+        idxs = sorted(by_type[tlabel])
+        rnd.shuffle(idxs)
+        n = len(idxs)
+        n_test = max(1, round(n * 0.2)) if n >= 3 else (1 if n == 2 else 0)
+        n_val = max(1, round(n * 0.2)) if n >= 4 else (1 if n == 3 else 0)
+        for i in idxs[:n_test]:
+            fam_split[family_of(i)] = "test"
+        for i in idxs[n_test:n_test + n_val]:
+            fam_split[family_of(i)] = "val"
+        for i in idxs[n_test + n_val:]:
+            fam_split[family_of(i)] = "train"
+    return fam_split
 
 
 def main() -> int:
-    rnd = random.Random(20261006)
+    fam_split = assign_splits()
+    # Per-type quotas: total target spread evenly; general gets its floor.
+    types = sorted({t for t, _t, _a in BANK})
+    quota = {t: TOTAL_TARGET // len(types) for t in types}
+    quota["general"] = max(quota["general"], MIN_GENERAL)
+    counts = {t: 0 for t in types}
+    # Round-robin over templates so no ordering of BANK can starve a category.
+    order = sorted(range(len(BANK)), key=lambda i: (BANK[i][0], i))
     items = []
     n = 0
-    # Expand: each template x several light mutations (case, punctuation, prefix)
-    prefixes = ["", "please ", "hey, ", "quick q: ", "urgent: ", "fyi "]
-    suffixes = ["", " please", "?", " thanks!", " asap", " now?"]
-    for tlabel, tmps in BANK:
-        for t in tmps:
+    progress = True
+    while progress:
+        progress = False
+        for idx in order:
+            tlabel, t, adv = BANK[idx]
+            if counts[tlabel] >= quota[tlabel]:
+                continue
             text = t.replace("{CODE}", CODE)
-            for p in prefixes:
-                for s in suffixes:
-                    q = (p + text + s).strip()
-                    # normalize duplicate punctuation
-                    q = q.replace("??", "?")
-                    iid = f"rx-{n:04d}"
-                    route = "large" if tlabel in LARGE else "small"
-                    items.append({"id": iid, "question": q, "type": tlabel,
-                                  "expected_route": route,
-                                  "source": "synthetic-realistic-v1",
-                                  "split": stable_split(iid)})
-                    n += 1
-                    if n >= 1200:
-                        break
-                if n >= 1200:
-                    break
-            if n >= 1200:
+            p = PREFIXES[(n // len(SUFFIXES)) % len(PREFIXES)]
+            s = SUFFIXES[n % len(SUFFIXES)]
+            q = (p + text + s).strip().replace("??", "?")
+            iid = f"rx-{n:04d}"
+            items.append({"id": iid, "family": family_of(idx), "question": q,
+                          "type": tlabel,
+                          "expected_route": "large" if tlabel in LARGE else "small",
+                          "adversarial": adv,
+                          "source": SOURCE,
+                          "split": fam_split[family_of(idx)]})
+            counts[tlabel] += 1
+            n += 1
+            progress = True
+            if sum(counts.values()) >= sum(quota.values()):
                 break
-        if n >= 1200:
+        if sum(counts.values()) >= sum(quota.values()):
             break
-    # shuffle deterministically within file (splits already assigned by id)
+    # Deterministic file order (splits already assigned by family).
+    rnd = random.Random(SPLIT_SEED)
     rnd.shuffle(items)
     with OUT.open("w", encoding="utf-8") as f:
         for it in items:
             f.write(json.dumps(it) + "\n")
+    # Coverage contract: fail loudly instead of shipping a skewed dataset.
     from collections import Counter
-    c = Counter(i["split"] for i in items)
-    print(f"wrote {len(items)} items -> {OUT} {dict(c)}")
+    by_type_split = Counter((i["type"], i["split"]) for i in items)
+    for t in types:
+        assert sum(by_type_split[(t, s)] for s in ("train", "val", "test")) >= min(quota[t], 50), \
+            f"category {t} under quota"
+        assert by_type_split[(t, "test")] > 0, f"category {t} missing from test"
+    assert counts["general"] >= MIN_GENERAL, "general coverage floor missed"
+    adv_test = sum(1 for i in items if i["split"] == "test" and i["adversarial"])
+    assert adv_test >= MIN_ADVERSARIAL_IN_TEST, \
+        f"only {adv_test} adversarial items in test; fallback unevaluated"
+    # Family disjointness across splits.
+    fams = {}
+    for i in items:
+        fams.setdefault(i["family"], set()).add(i["split"])
+    assert all(len(v) == 1 for v in fams.values()), "family spans splits"
+    print(f"wrote {len(items)} items -> {OUT} {dict(Counter(i['split'] for i in items))}")
+    print(f"per-type: {dict(Counter(i['type'] for i in items))}; adversarial in test: {adv_test}")
     return 0
 
 

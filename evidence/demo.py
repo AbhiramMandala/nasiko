@@ -9,8 +9,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from compact_bench import encode_tool
-from compact_aggressive import encode_aggressive
+from compact_bench import check_preserved, encode_tool
+from compact_aggressive import encode_aggressive, trim_desc
 from classifier_eval import build_dataset, split_by_family
 
 
@@ -24,10 +24,16 @@ def demo_compact():
         sort_keys=True, separators=(",", ":"))
     line, _ = encode_tool(tool)
     aline, _ = encode_aggressive(tool)
-    for label, blob in [("DEFAULT", line), ("AGGRESSIVE (optional)", aline)]:
+    ok_default, _ = check_preserved(tool, line)
+    ok_aggr, _ = check_preserved(
+        {"name": tool["name"],
+         "description": trim_desc(tool.get("description", "")),
+         "parameters": tool.get("parameters", {})}, aline)
+    for label, blob, ok in [("DEFAULT", line, ok_default),
+                            ("AGGRESSIVE (optional)", aline, ok_aggr)]:
         b, c = len(baseline), len(blob.encode())
         print(f"REAL TOOL [{label}]\n  Baseline: {b} bytes\n  Compact:  {c} bytes\n"
-              f"  Saved:    {b - c} bytes ({100 * (1 - c / b):.1f}%)\n  Semantic: PASS")
+              f"  Saved:    {b - c} bytes ({100 * (1 - c / b):.1f}%)\n  Semantic: {'PASS' if ok else 'FAIL'}")
     arow = next(r for r in agg["rows"] if r["name"] == "get_weather")
     print(f"  (report: aggressive avg {agg['avg_reduction_pct']}% over {agg['n']} tools)")
     call = '<<call get_weather {"latitude": 17.4, "longitude": 78.4}>>'
@@ -37,20 +43,26 @@ def demo_compact():
 
 
 def demo_classifier():
+    rep = json.loads((HERE / "classifier_realistic_report.json").read_text(encoding="utf-8"))
+    thr = rep.get("threshold", 0.4)
     data = build_dataset()
     train, _, _ = split_by_family(data)
-    from classifier_realistic_eval import train_model, feats_v2, predict
+    from classifier_realistic_eval import train_model, feats_v2, predict, route_for_type
     w, t = train_model(
         [{"question": q, "type": l} for _, q, l in train], feats_v2)
-    # certain + uncertain (terse ambiguous triggers fallback at tuned thr)
+    # Certain predictions plus a terse ambiguous case that must fall back
+    # to the large tier (predicted_type is preserved, route is separate).
+    # Threshold comes from the benchmark report (val-tuned), not hard-coded.
     for q in ["write a python function to sort a list",
-              "compare postgres vs sqlite for caching",
+              "design a fail-closed bypass that never guesses",
               "pls"]:
         best, conf, comp = predict(q, w, t, feats_v2, 0.0)
-        route = "LARGE MODEL" if best in ("code_generation", "analytical_reasoning", "technical_design") else "SMALL MODEL"
-        fb = "triggered (safe fallback)" if conf < 0.4 else "not needed"
-        print(f"\nQUESTION\n  {q!r}\n    ->\n  ROUTER\n  Prediction: {route} ({best})\n  Confidence: {conf:.0%}")
-        print(f"    ->\n  Fallback check: {fb}")
+        fb = conf < thr
+        route = "LARGE MODEL" if (fb or route_for_type(best) == "large") else "SMALL MODEL"
+        print(f"\nQUESTION\n  {q!r}\n    ->\n  ROUTER (thr={thr})")
+        print(f"  Predicted type: {best}\n  Confidence: {conf:.0%}")
+        print(f"  Fallback: {'triggered -> route LARGE (strong model)' if fb else 'not needed'}")
+        print(f"  Route: {route}")
     print("\n  (measured on realistic test: see classifier_realistic_report.json)")
 
 

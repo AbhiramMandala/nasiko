@@ -1,142 +1,226 @@
 {
-  "dataset": "synthetic-realistic-v1 (NOT human labels; do not compare numerically with winner's 86% on human labels)",
-  "n_total": 1200,
-  "n_train": 845,
-  "n_val": 169,
-  "n_test": 186,
-  "tuning": "threshold+regex_weight tuned on VAL only (thr=0.4, rw=0.0); TEST evaluated once",
+  "dataset": "['synthetic-realistic-v2'] (NOT human labels; do not compare numerically with winner's 86% on human labels)",
+  "source": "synthetic-realistic-v2",
+  "n_total": 1197,
+  "n_train": 704,
+  "n_val": 246,
+  "n_test": 247,
+  "tuning": "threshold+regex_weight tuned on VAL only (thr=0.4, rw=2.0); TEST evaluated once",
+  "threshold": 0.4,
+  "regex_weight": 2.0,
+  "fallback_policy": "low confidence -> fallback=True, route=large (strong model); predicted_type preserved",
   "systems": {
     "baseline_regex": {
-      "n": 186,
-      "accuracy": 0.7957,
-      "macro_p": 0.8024,
-      "macro_r": 0.6793,
-      "macro_f1": 0.7121,
+      "n": 247,
+      "accuracy": 0.9474,
+      "macro_p": 0.9558,
+      "macro_r": 0.9524,
+      "macro_f1": 0.9453,
+      "route_accuracy": 0.9474,
       "fallback_rate": 0.0,
-      "large_routed_pct": 58.6,
-      "avg_ms": 0.0115,
+      "large_routed_pct": 38.1,
+      "avg_ms": 0.0102,
       "confusion": {
         "code_generation": {
-          "code_generation": 35,
+          "code_generation": 26,
           "code_understanding": 0,
           "technical_design": 0,
           "analytical_reasoning": 0,
           "writing": 0,
           "factual_lookup": 0,
-          "general": 15
+          "general": 13
         },
         "code_understanding": {
-          "code_generation": 5,
-          "code_understanding": 9,
+          "code_generation": 0,
+          "code_understanding": 34,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 0
+        },
+        "technical_design": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 34,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 0
+        },
+        "analytical_reasoning": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 34,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 0
+        },
+        "writing": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 43,
+          "factual_lookup": 0,
+          "general": 0
+        },
+        "factual_lookup": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 34,
+          "general": 0
+        },
+        "general": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 29
+        }
+      },
+      "est_cost_units_per_req": 4.43,
+      "est_latency_ms": 933.4
+    },
+    "overlap_v1": {
+      "n": 247,
+      "accuracy": 0.2955,
+      "macro_p": 0.1164,
+      "macro_r": 0.2857,
+      "macro_f1": 0.1636,
+      "route_accuracy": 0.7126,
+      "fallback_rate": 0.0202,
+      "large_routed_pct": 64.0,
+      "avg_ms": 0.0231,
+      "confusion": {
+        "code_generation": {
+          "code_generation": 39,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 0
+        },
+        "code_understanding": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 34,
+          "general": 0
+        },
+        "technical_design": {
+          "code_generation": 24,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 10,
+          "factual_lookup": 0,
+          "general": 0
+        },
+        "analytical_reasoning": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 34,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 0
+        },
+        "writing": {
+          "code_generation": 43,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 0,
+          "general": 0
+        },
+        "factual_lookup": {
+          "code_generation": 0,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 0,
+          "factual_lookup": 34,
+          "general": 0
+        },
+        "general": {
+          "code_generation": 18,
+          "code_understanding": 0,
+          "technical_design": 0,
+          "analytical_reasoning": 0,
+          "writing": 11,
+          "factual_lookup": 0,
+          "general": 0
+        }
+      },
+      "est_cost_units_per_req": 6.76,
+      "est_latency_ms": 1296.0
+    },
+    "improved_v2(rw=2.0,thr=0.4)": {
+      "n": 247,
+      "accuracy": 0.2753,
+      "macro_p": 0.2943,
+      "macro_r": 0.273,
+      "macro_f1": 0.1991,
+      "route_accuracy": 0.5789,
+      "fallback_rate": 0.0364,
+      "large_routed_pct": 23.9,
+      "avg_ms": 0.0616,
+      "confusion": {
+        "code_generation": {
+          "code_generation": 29,
+          "code_understanding": 0,
           "technical_design": 0,
           "analytical_reasoning": 0,
           "writing": 0,
           "factual_lookup": 0,
           "general": 10
         },
-        "technical_design": {
-          "code_generation": 0,
-          "code_understanding": 0,
-          "technical_design": 23,
-          "analytical_reasoning": 0,
-          "writing": 0,
-          "factual_lookup": 0,
-          "general": 0
-        },
-        "analytical_reasoning": {
-          "code_generation": 0,
-          "code_understanding": 0,
-          "technical_design": 0,
-          "analytical_reasoning": 38,
-          "writing": 0,
-          "factual_lookup": 0,
-          "general": 0
-        },
-        "writing": {
-          "code_generation": 0,
-          "code_understanding": 0,
-          "technical_design": 0,
-          "analytical_reasoning": 0,
-          "writing": 26,
-          "factual_lookup": 0,
-          "general": 0
-        },
-        "factual_lookup": {
-          "code_generation": 0,
-          "code_understanding": 0,
-          "technical_design": 8,
-          "analytical_reasoning": 0,
-          "writing": 0,
-          "factual_lookup": 17,
-          "general": 0
-        },
-        "general": {
-          "code_generation": 0,
-          "code_understanding": 0,
-          "technical_design": 0,
-          "analytical_reasoning": 0,
-          "writing": 0,
-          "factual_lookup": 0,
-          "general": 0
-        }
-      },
-      "est_cost_units_per_req": 6.27,
-      "est_latency_ms": 1220.4
-    },
-    "overlap_v1": {
-      "n": 186,
-      "accuracy": 1.0,
-      "macro_p": 0.8571,
-      "macro_r": 0.8571,
-      "macro_f1": 0.8571,
-      "fallback_rate": 0.0,
-      "large_routed_pct": 59.7,
-      "avg_ms": 0.0221,
-      "confusion": {
-        "code_generation": {
-          "code_generation": 50,
-          "code_understanding": 0,
-          "technical_design": 0,
-          "analytical_reasoning": 0,
-          "writing": 0,
-          "factual_lookup": 0,
-          "general": 0
-        },
         "code_understanding": {
           "code_generation": 0,
-          "code_understanding": 24,
+          "code_understanding": 0,
           "technical_design": 0,
           "analytical_reasoning": 0,
           "writing": 0,
-          "factual_lookup": 0,
+          "factual_lookup": 34,
           "general": 0
         },
         "technical_design": {
-          "code_generation": 0,
+          "code_generation": 1,
           "code_understanding": 0,
-          "technical_design": 23,
+          "technical_design": 1,
           "analytical_reasoning": 0,
-          "writing": 0,
+          "writing": 1,
           "factual_lookup": 0,
-          "general": 0
+          "general": 31
         },
         "analytical_reasoning": {
           "code_generation": 0,
           "code_understanding": 0,
           "technical_design": 0,
-          "analytical_reasoning": 38,
+          "analytical_reasoning": 0,
           "writing": 0,
           "factual_lookup": 0,
-          "general": 0
+          "general": 34
         },
         "writing": {
           "code_generation": 0,
           "code_understanding": 0,
           "technical_design": 0,
           "analytical_reasoning": 0,
-          "writing": 26,
+          "writing": 0,
           "factual_lookup": 0,
-          "general": 0
+          "general": 43
         },
         "factual_lookup": {
           "code_generation": 0,
@@ -144,98 +228,21 @@
           "technical_design": 0,
           "analytical_reasoning": 0,
           "writing": 0,
-          "factual_lookup": 25,
+          "factual_lookup": 34,
           "general": 0
         },
         "general": {
-          "code_generation": 0,
+          "code_generation": 25,
           "code_understanding": 0,
           "technical_design": 0,
           "analytical_reasoning": 0,
           "writing": 0,
           "factual_lookup": 0,
-          "general": 0
+          "general": 4
         }
       },
-      "est_cost_units_per_req": 6.37,
-      "est_latency_ms": 1235.8
-    },
-    "improved_v2(rw=0.0,thr=0.4)": {
-      "n": 186,
-      "accuracy": 1.0,
-      "macro_p": 0.8571,
-      "macro_r": 0.8571,
-      "macro_f1": 0.8571,
-      "fallback_rate": 0.0,
-      "large_routed_pct": 59.7,
-      "avg_ms": 0.0482,
-      "confusion": {
-        "code_generation": {
-          "code_generation": 50,
-          "code_understanding": 0,
-          "technical_design": 0,
-          "analytical_reasoning": 0,
-          "writing": 0,
-          "factual_lookup": 0,
-          "general": 0
-        },
-        "code_understanding": {
-          "code_generation": 0,
-          "code_understanding": 24,
-          "technical_design": 0,
-          "analytical_reasoning": 0,
-          "writing": 0,
-          "factual_lookup": 0,
-          "general": 0
-        },
-        "technical_design": {
-          "code_generation": 0,
-          "code_understanding": 0,
-          "technical_design": 23,
-          "analytical_reasoning": 0,
-          "writing": 0,
-          "factual_lookup": 0,
-          "general": 0
-        },
-        "analytical_reasoning": {
-          "code_generation": 0,
-          "code_understanding": 0,
-          "technical_design": 0,
-          "analytical_reasoning": 38,
-          "writing": 0,
-          "factual_lookup": 0,
-          "general": 0
-        },
-        "writing": {
-          "code_generation": 0,
-          "code_understanding": 0,
-          "technical_design": 0,
-          "analytical_reasoning": 0,
-          "writing": 26,
-          "factual_lookup": 0,
-          "general": 0
-        },
-        "factual_lookup": {
-          "code_generation": 0,
-          "code_understanding": 0,
-          "technical_design": 0,
-          "analytical_reasoning": 0,
-          "writing": 0,
-          "factual_lookup": 25,
-          "general": 0
-        },
-        "general": {
-          "code_generation": 0,
-          "code_understanding": 0,
-          "technical_design": 0,
-          "analytical_reasoning": 0,
-          "writing": 0,
-          "factual_lookup": 0,
-          "general": 0
-        }
-      },
-      "est_cost_units_per_req": 6.37,
-      "est_latency_ms": 1235.8
+      "est_cost_units_per_req": 3.15,
+      "est_latency_ms": 734.7
     }
   },
   "always_large_baseline": {
@@ -245,8 +252,8 @@
     "note": "quality ceiling; cost ceiling"
   },
   "routing_value": {
-    "improved_vs_always_large_cost_saving_pct": 36.3,
-    "improved_routed_large_pct": 59.7,
+    "improved_vs_always_large_cost_saving_pct": 68.5,
+    "improved_routed_large_pct": 23.9,
     "quality_proxy": "routing accuracy (correct tier); live answer quality needs LLM key \u2014 NOT measured"
   }
 }
